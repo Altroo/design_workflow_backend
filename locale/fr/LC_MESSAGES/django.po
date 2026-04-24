@@ -1,0 +1,252 @@
+# French translations for base_backend
+# This file is distributed under the same license as the base_backend package.
+msgid ""
+msgstr ""
+"Project-Id-Version: base_backend\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-04-03 17:53+0100\n"
+"PO-Revision-Date: 2026-04-03 00:00+0000\n"
+"Last-Translator: \n"
+"Language-Team: French\n"
+"Language: fr\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+
+msgid "Search"
+msgstr "Recherche"
+
+msgid "Date Joined After"
+msgstr "Date d'inscription après"
+
+msgid "Date Joined Before"
+msgstr "Date d'inscription avant"
+
+msgid "Last Login After"
+msgstr "Dernière connexion après"
+
+msgid "Last Login Before"
+msgstr "Dernière connexion avant"
+
+msgid "Gender"
+msgstr "Sexe"
+
+msgid "Is Staff"
+msgstr "Est personnel"
+
+msgid "Is Active"
+msgstr "Est actif"
+
+msgid "The Email must be set"
+msgstr "L'adresse e-mail doit être définie"
+
+msgid "Superuser must have is_staff=True."
+msgstr "Le superutilisateur doit avoir is_staff=True."
+
+msgid "Superuser must have is_superuser=True."
+msgstr "Le superutilisateur doit avoir is_superuser=True."
+
+msgid "Adresse e‑mail"
+msgstr ""
+
+msgid "Adresse e‑mail de l'utilisateur"
+msgstr ""
+
+msgid "Prénom"
+msgstr ""
+
+msgid "Prénom de l'utilisateur"
+msgstr ""
+
+msgid "Nom"
+msgstr ""
+
+msgid "Nom de famille de l'utilisateur"
+msgstr ""
+
+msgid "Unset"
+msgstr "Non défini"
+
+msgid "Homme"
+msgstr ""
+
+msgid "Femme"
+msgstr ""
+
+msgid "Sexe"
+msgstr ""
+
+msgid "Sexe de l'utilisateur"
+msgstr ""
+
+msgid "Photo de profil"
+msgstr ""
+
+msgid "Image de profil de l'utilisateur"
+msgstr ""
+
+msgid "Photo de profil recadrée"
+msgstr ""
+
+msgid "Version recadrée de la photo de profil"
+msgstr ""
+
+msgid "Statut personnel"
+msgstr ""
+
+msgid "Indique si l'utilisateur peut se connecter au panneau d'administration."
+msgstr ""
+
+msgid "Actif"
+msgstr ""
+
+msgid "Indique si ce compte doit être considéré comme actif."
+msgstr ""
+
+msgid "Date d'inscription"
+msgstr ""
+
+msgid "Horodatage de l'inscription de l'utilisateur."
+msgstr ""
+
+msgid "Date de modification"
+msgstr ""
+
+msgid "Horodatage de la dernière modification du profil."
+msgstr ""
+
+msgid "Mot de passe - Code de réinitialisation"
+msgstr ""
+
+msgid "Code de réinitialisation du mot de passe (généré automatiquement)."
+msgstr ""
+
+msgid "Mot de passe - Date de création du code"
+msgstr ""
+
+msgid "Date à laquelle le code de réinitialisation a été créé."
+msgstr ""
+
+msgid "Mot de passe - Task ID de réinitialisation"
+msgstr ""
+
+msgid "Identifiant de la tâche Celery de réinitialisation du mot de passe."
+msgstr ""
+
+msgid "Mot de passe par défaut défini"
+msgstr ""
+
+msgid "Indique si le mot de passe par défaut a été défini."
+msgstr ""
+
+msgid "Peut consulter"
+msgstr ""
+
+msgid "Peut imprimer"
+msgstr ""
+
+msgid "Peut créer"
+msgstr ""
+
+msgid "Peut modifier"
+msgstr ""
+
+msgid "Peut supprimer"
+msgstr ""
+
+msgid "Historique Utilisateur"
+msgstr ""
+
+msgid "Historiques Utilisateurs"
+msgstr ""
+
+msgid "Utilisateur"
+msgstr ""
+
+msgid "Utilisateurs"
+msgstr ""
+
+#, python-format
+msgid "Valeur du sexe invalide : %(value)s. Doit être 'Homme' ou 'Femme'."
+msgstr ""
+
+#, python-format
+msgid "Format d'image non reconnu pour %(field)s"
+msgstr ""
+
+msgid "Un utilisateur avec ce champ adresse électronique existe déjà."
+msgstr ""
+
+msgid "L'adresse électronique est requise."
+msgstr ""
+
+msgid "Entrez une adresse électronique valide."
+msgstr ""
+
+msgid "Votre mot de passe est invalide."
+msgstr ""
+
+msgid "Les mots de passe ne correspondent pas."
+msgstr ""
+
+msgid "Le mot de passe doit contenir au moins 8 caractères."
+msgstr ""
+
+msgid "Utilisateur ou code verification invalide."
+msgstr ""
+
+msgid ""
+"Le code de réinitialisation a expiré. Veuillez demander un nouveau code."
+msgstr ""
+
+msgid "This field is required."
+msgstr "Ce champ est obligatoire."
+
+msgid "Enter a valid email address."
+msgstr "Entrez une adresse électronique valide."
+
+msgid "Utilisateur n'éxiste pas!"
+msgstr ""
+
+msgid "Aucune utilisateur ne correspond à la requête."
+msgstr ""
+
+msgid "Vous ne pouvez pas modifier votre utilisateur dans cette page."
+msgstr ""
+
+msgid "Vous ne pouvez pas supprimer votre utilisateur."
+msgstr ""
+
+msgid "Une liste d'identifiants est requise."
+msgstr ""
+
+msgid "Les identifiants doivent être des entiers."
+msgstr ""
+
+msgid "Vous ne pouvez pas supprimer votre propre utilisateur."
+msgstr ""
+
+msgid "Certains utilisateurs sont introuvables."
+msgstr ""
+
+#, python-format
+msgid "Requête ralentie. Réessayez dans %(wait)d seconde."
+msgid_plural "Requête ralentie. Réessayez dans %(wait)d secondes."
+msgstr[0] ""
+msgstr[1] ""
+
+msgid "View site"
+msgstr "Voir le site"
+
+msgid "Documentation"
+msgstr "Documentation"
+
+msgid "Change password"
+msgstr "Changer le mot de passe"
+
+msgid "Log out"
+msgstr "Déconnexion"
+
+msgid "Maintenance"
+msgstr "Maintenance"

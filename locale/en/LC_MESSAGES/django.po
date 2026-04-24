@@ -1,0 +1,252 @@
+# English translations for base_backend
+# This file is distributed under the same license as the base_backend package.
+msgid ""
+msgstr ""
+"Project-Id-Version: base_backend\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-04-03 17:53+0100\n"
+"PO-Revision-Date: 2026-04-03 00:00+0000\n"
+"Last-Translator: \n"
+"Language-Team: English\n"
+"Language: en\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgid "Search"
+msgstr "Search"
+
+msgid "Date Joined After"
+msgstr "Date Joined After"
+
+msgid "Date Joined Before"
+msgstr "Date Joined Before"
+
+msgid "Last Login After"
+msgstr "Last Login After"
+
+msgid "Last Login Before"
+msgstr "Last Login Before"
+
+msgid "Gender"
+msgstr "Gender"
+
+msgid "Is Staff"
+msgstr "Is Staff"
+
+msgid "Is Active"
+msgstr "Is Active"
+
+msgid "The Email must be set"
+msgstr "The Email must be set"
+
+msgid "Superuser must have is_staff=True."
+msgstr "Superuser must have is_staff=True."
+
+msgid "Superuser must have is_superuser=True."
+msgstr "Superuser must have is_superuser=True."
+
+msgid "Adresse e‑mail"
+msgstr "Email address"
+
+msgid "Adresse e‑mail de l'utilisateur"
+msgstr "User's email address"
+
+msgid "Prénom"
+msgstr "First name"
+
+msgid "Prénom de l'utilisateur"
+msgstr "User's first name"
+
+msgid "Nom"
+msgstr "Last name"
+
+msgid "Nom de famille de l'utilisateur"
+msgstr "User's last name"
+
+msgid "Unset"
+msgstr "Unset"
+
+msgid "Homme"
+msgstr "Male"
+
+msgid "Femme"
+msgstr "Female"
+
+msgid "Sexe"
+msgstr "Gender"
+
+msgid "Sexe de l'utilisateur"
+msgstr "User's gender"
+
+msgid "Photo de profil"
+msgstr "Profile picture"
+
+msgid "Image de profil de l'utilisateur"
+msgstr "User's profile picture"
+
+msgid "Photo de profil recadrée"
+msgstr "Cropped profile picture"
+
+msgid "Version recadrée de la photo de profil"
+msgstr "Cropped version of the profile picture"
+
+msgid "Statut personnel"
+msgstr "Staff status"
+
+msgid "Indique si l'utilisateur peut se connecter au panneau d'administration."
+msgstr "Designates whether the user can log into the admin panel."
+
+msgid "Actif"
+msgstr "Active"
+
+msgid "Indique si ce compte doit être considéré comme actif."
+msgstr "Designates whether this account should be treated as active."
+
+msgid "Date d'inscription"
+msgstr "Date joined"
+
+msgid "Horodatage de l'inscription de l'utilisateur."
+msgstr "Timestamp when the user registered."
+
+msgid "Date de modification"
+msgstr "Date modified"
+
+msgid "Horodatage de la dernière modification du profil."
+msgstr "Timestamp of the last profile modification."
+
+msgid "Mot de passe - Code de réinitialisation"
+msgstr "Password – Reset code"
+
+msgid "Code de réinitialisation du mot de passe (généré automatiquement)."
+msgstr "Password reset code (auto-generated)."
+
+msgid "Mot de passe - Date de création du code"
+msgstr "Password – Code creation date"
+
+msgid "Date à laquelle le code de réinitialisation a été créé."
+msgstr "Date when the reset code was created."
+
+msgid "Mot de passe - Task ID de réinitialisation"
+msgstr "Password – Reset task ID"
+
+msgid "Identifiant de la tâche Celery de réinitialisation du mot de passe."
+msgstr "Celery task identifier for the password reset."
+
+msgid "Mot de passe par défaut défini"
+msgstr "Default password set"
+
+msgid "Indique si le mot de passe par défaut a été défini."
+msgstr "Indicates whether the default password has been set."
+
+msgid "Peut consulter"
+msgstr "Can view"
+
+msgid "Peut imprimer"
+msgstr "Can print"
+
+msgid "Peut créer"
+msgstr "Can create"
+
+msgid "Peut modifier"
+msgstr "Can edit"
+
+msgid "Peut supprimer"
+msgstr "Can delete"
+
+msgid "Historique Utilisateur"
+msgstr "User history"
+
+msgid "Historiques Utilisateurs"
+msgstr "User histories"
+
+msgid "Utilisateur"
+msgstr "User"
+
+msgid "Utilisateurs"
+msgstr "Users"
+
+#, python-format
+msgid "Valeur du sexe invalide : %(value)s. Doit être 'Homme' ou 'Femme'."
+msgstr "Invalid gender value: %(value)s. Must be 'Male' or 'Female'."
+
+#, python-format
+msgid "Format d'image non reconnu pour %(field)s"
+msgstr "Unrecognized image format for %(field)s"
+
+msgid "Un utilisateur avec ce champ adresse électronique existe déjà."
+msgstr "A user with this email address already exists."
+
+msgid "L'adresse électronique est requise."
+msgstr "Email address is required."
+
+msgid "Entrez une adresse électronique valide."
+msgstr "Enter a valid email address."
+
+msgid "Votre mot de passe est invalide."
+msgstr "Your password is incorrect."
+
+msgid "Les mots de passe ne correspondent pas."
+msgstr "Passwords do not match."
+
+msgid "Le mot de passe doit contenir au moins 8 caractères."
+msgstr "The password must contain at least 8 characters."
+
+msgid "Utilisateur ou code verification invalide."
+msgstr "Invalid user or verification code."
+
+msgid ""
+"Le code de réinitialisation a expiré. Veuillez demander un nouveau code."
+msgstr "The reset code has expired. Please request a new code."
+
+msgid "This field is required."
+msgstr "This field is required."
+
+msgid "Enter a valid email address."
+msgstr "Enter a valid email address."
+
+msgid "Utilisateur n'éxiste pas!"
+msgstr "User does not exist!"
+
+msgid "Aucune utilisateur ne correspond à la requête."
+msgstr "No user matches the request."
+
+msgid "Vous ne pouvez pas modifier votre utilisateur dans cette page."
+msgstr "You cannot edit your own user on this page."
+
+msgid "Vous ne pouvez pas supprimer votre utilisateur."
+msgstr "You cannot delete your own user."
+
+msgid "Une liste d'identifiants est requise."
+msgstr "A list of identifiers is required."
+
+msgid "Les identifiants doivent être des entiers."
+msgstr "Identifiers must be integers."
+
+msgid "Vous ne pouvez pas supprimer votre propre utilisateur."
+msgstr "You cannot delete your own user account."
+
+msgid "Certains utilisateurs sont introuvables."
+msgstr "Some users could not be found."
+
+#, python-format
+msgid "Requête ralentie. Réessayez dans %(wait)d seconde."
+msgid_plural "Requête ralentie. Réessayez dans %(wait)d secondes."
+msgstr[0] "Request throttled. Retry in %(wait)d second."
+msgstr[1] "Request throttled. Retry in %(wait)d seconds."
+
+msgid "View site"
+msgstr "View site"
+
+msgid "Documentation"
+msgstr "Documentation"
+
+msgid "Change password"
+msgstr "Change password"
+
+msgid "Log out"
+msgstr "Log out"
+
+msgid "Maintenance"
+msgstr "Maintenance"
