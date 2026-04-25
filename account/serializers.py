@@ -12,6 +12,20 @@ from design_workflow_backend.utils import ImageProcessor
 from .models import CustomUser
 
 
+def normalize_gender_value(value):
+    if value in (None, ''):
+        return ''
+    normalized = str(value).strip().lower()
+    if normalized in {'h', 'homme'}:
+        return 'H'
+    if normalized in {'f', 'femme'}:
+        return 'F'
+    raise serializers.ValidationError(
+        _("Valeur du sexe invalide : %(value)s. Doit etre 'Homme' ou 'Femme'.")
+        % {'value': value}
+    )
+
+
 class CreateAccountSerializer(serializers.ModelSerializer):
     avatar = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     avatar_cropped = serializers.CharField(
@@ -21,17 +35,7 @@ class CreateAccountSerializer(serializers.ModelSerializer):
 
     @staticmethod
     def validate_gender(value):
-        if not value:
-            return ""
-        if value == "Homme":
-            return "H"
-        elif value == "Femme":
-            return "F"
-        else:
-            raise serializers.ValidationError(
-                _("Valeur du sexe invalide : %(value)s. Doit être 'Homme' ou 'Femme'.")
-                % {"value": value}
-            )
+        return normalize_gender_value(value)
 
     @staticmethod
     def _process_image_field(field_name, validated_data):
@@ -256,16 +260,7 @@ class ProfilePutSerializer(serializers.ModelSerializer):
 
     @staticmethod
     def validate_gender(value):
-        if not value:
-            return ""
-        if value == "Homme":
-            return "H"
-        elif value == "Femme":
-            return "F"
-        else:
-            raise serializers.ValidationError(
-                f"Valeur du sexe invalide : {value}. Doit être 'Homme' ou 'Femme'."
-            )
+        return normalize_gender_value(value)
 
     @staticmethod
     def _process_image_field(field_name, validated_data):

@@ -1,6 +1,19 @@
 from django.contrib import admin
 
-from .models import Notification, Project, Task, TaskActivity, TaskComment, TimeEntry
+from .models import (
+    ChatMessage,
+    ChatMessageAttachment,
+    ChatThread,
+    Notification,
+    Project,
+    Task,
+    TaskActivity,
+    TaskAttachment,
+    TaskChecklistItem,
+    TaskComment,
+    TaskLabel,
+    TimeEntry,
+)
 
 
 @admin.register(Project)
@@ -40,3 +53,42 @@ class NotificationAdmin(admin.ModelAdmin):
     list_display = ("recipient", "type", "task", "read_at", "created_at")
     list_filter = ("type", "read_at")
 
+
+
+
+@admin.register(TaskLabel)
+class TaskLabelAdmin(admin.ModelAdmin):
+    list_display = ("name", "color", "created_at")
+    search_fields = ("name",)
+
+
+@admin.register(TaskChecklistItem)
+class TaskChecklistItemAdmin(admin.ModelAdmin):
+    list_display = ("task", "title", "done", "sort_order", "created_by")
+    list_filter = ("done",)
+    search_fields = ("title", "task__title")
+
+
+@admin.register(TaskAttachment)
+class TaskAttachmentAdmin(admin.ModelAdmin):
+    list_display = ("task", "name", "uploaded_by", "size", "created_at")
+    search_fields = ("name", "task__title")
+
+
+@admin.register(ChatThread)
+class ChatThreadAdmin(admin.ModelAdmin):
+    list_display = ("id", "kind", "title", "updated_at")
+    list_filter = ("kind",)
+    search_fields = ("title",)
+
+
+@admin.register(ChatMessage)
+class ChatMessageAdmin(admin.ModelAdmin):
+    list_display = ("thread", "sender", "created_at")
+    search_fields = ("body", "sender__email")
+
+
+@admin.register(ChatMessageAttachment)
+class ChatMessageAttachmentAdmin(admin.ModelAdmin):
+    list_display = ("message", "name", "size", "created_at")
+    search_fields = ("name",)

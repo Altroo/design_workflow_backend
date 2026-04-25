@@ -9,6 +9,7 @@ from django.conf import settings
 from django.contrib.auth.models import AnonymousUser
 from django.db import close_old_connections
 from jwt import decode as jwt_decode
+from jwt.exceptions import DecodeError
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.tokens import UntypedToken
 
@@ -89,7 +90,7 @@ class SimpleJwtTokenAuthMiddleware(BaseMiddleware):
             decoded_data = jwt_decode(token, settings.SECRET_KEY, algorithms=["HS256"])
             user = self.get_user_from_token(decoded_data["user_id"])  # type: ignore[arg-type]
             scope["user"] = _AwaitableUser(user)  # type: ignore[arg-type]
-        except (KeyError, CustomUser.DoesNotExist, jwt_decode.DecodeError):
+        except (KeyError, CustomUser.DoesNotExist, DecodeError):
             scope["user"] = _AwaitableUser(AnonymousUser())  # type: ignore[arg-type]
             await self._reject_connection(send)
             return None

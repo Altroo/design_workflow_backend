@@ -4,7 +4,7 @@ from django.contrib.auth import get_user_model
 from django.db.models import Q
 from django.utils import timezone
 
-from .models import Notification, TaskActivity
+from .models import Notification, TaskActivity, TaskActivityType, TimeEntry
 
 User = get_user_model()
 
@@ -16,7 +16,7 @@ def broadcast_to_users(user_ids: list[int], message: dict) -> None:
 
     for user_id in {user_id for user_id in user_ids if user_id}:
         async_to_sync(channel_layer.group_send)(
-            str(user_id),
+            f"user_{user_id}",
             {"type": "receive_group_message", "message": message},
         )
 
@@ -45,6 +45,34 @@ def record_task_activity(task, actor, action_type: str, metadata: dict | None = 
         action_type=action_type,
         metadata=metadata or {},
     )
+
+
+def log_automatic_time_entry(
+    task,
+    *,
+    user,
+    minutes: int,
+    note: str,
+    event: str,
+):
+    if not user or minutes <= 0:
+        return None
+    time_entry = TimeEntry.objects.create(
+        task=task,
+        user=user,
+        minutes=minutes,
+        work_date=timezone.localdate(),
+        note=note,
+    )
+    task.recalculate_actual_minutes()
+    record_task_activity(
+        task,
+        user,
+        TaskActivityType.TIME_LOGGED,
+        {"time_entry_id": time_entry.id, "minutes": time_entry.minutes, "event": event},
+    )
+    broadcast_task_event(task, "time_logged", recipients=related_task_user_ids(task))
+    return time_entry
 
 
 def create_notification(

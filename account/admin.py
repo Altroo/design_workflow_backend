@@ -18,12 +18,13 @@ class CustomUserAdmin(UserAdmin):
         "email",
         "first_name",
         "last_name",
+        "role",
         "is_staff",
         "is_active",
         "date_joined",
         "date_updated",
     )
-    list_filter = ("is_staff", "is_active")
+    list_filter = ("role", "is_staff", "is_active")
     date_hierarchy = "date_joined"
     fieldsets = (
         (
@@ -39,10 +40,11 @@ class CustomUserAdmin(UserAdmin):
                     "avatar_cropped",
                     "password_reset_code",
                     "default_password_set",
+                    "role",
                 )
             },
         ),
-        ("Permissions", {"fields": ("is_active", "is_staff", "is_superuser")}),
+        ("Permissions", {"fields": ("is_active", "is_staff", "is_superuser", "can_view", "can_print", "can_create", "can_edit", "can_delete")}),
         ("Date d'activité", {"fields": ("date_joined", "date_updated", "last_login")}),
     )
     add_fieldsets = (
@@ -56,10 +58,11 @@ class CustomUserAdmin(UserAdmin):
                     "first_name",
                     "last_name",
                     "gender",
+                    "role",
                 )
             },
         ),
-        ("Permissions", {"fields": ("is_active", "is_staff", "is_superuser")}),
+        ("Permissions", {"fields": ("is_active", "is_staff", "is_superuser", "can_view", "can_print", "can_create", "can_edit", "can_delete")}),
     )
     search_fields = ("email",)
     ordering = ("-id",)

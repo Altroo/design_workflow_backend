@@ -48,6 +48,10 @@ class TaskActivityType(models.TextChoices):
     PROJECT_CREATED = "project_created", "Project created"
     PROJECT_UPDATED = "project_updated", "Project updated"
     PROJECT_ARCHIVED = "project_archived", "Project archived"
+    LABEL_UPDATED = "label_updated", "Label updated"
+    CHECKLIST_UPDATED = "checklist_updated", "Checklist updated"
+    ATTACHMENT_ADDED = "attachment_added", "Attachment added"
+    TASK_ARCHIVED = "task_archived", "Task archived"
 
 
 class NotificationType(models.TextChoices):
@@ -58,6 +62,7 @@ class NotificationType(models.TextChoices):
     TASK_COMMENT = "task_comment", "Task comment"
     TASK_STATUS = "task_status", "Task status"
     TASK_BLOCKED = "task_blocked", "Task blocked"
+    CHAT_MESSAGE = "chat_message", "Chat message"
 
 
 class Project(TimestampedModel):
@@ -98,13 +103,29 @@ class Project(TimestampedModel):
 
     @property
     def open_tasks_count(self) -> int:
-        return self.tasks.exclude(status=TaskStatus.DONE).count()
+        return self.tasks.filter(archived=False).exclude(status=TaskStatus.DONE).count()
+
+
+class TaskLabel(TimestampedModel):
+    name = models.CharField(max_length=80, unique=True)
+    color = models.CharField(max_length=16, default="#111827")
+
+    class Meta:
+        ordering = ("name",)
+
+    def __str__(self):
+        return self.name
 
 
 class Task(TimestampedModel):
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="tasks")
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
+    cover_image = models.ImageField(
+        upload_to="design_workflow/task_covers/%Y/%m/",
+        null=True,
+        blank=True,
+    )
     current_assignee = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -129,6 +150,11 @@ class Task(TimestampedModel):
     actual_minutes = models.PositiveIntegerField(default=0)
     blocked_reason = models.TextField(blank=True)
     sort_order = models.PositiveIntegerField(default=0)
+    labels = models.ManyToManyField(TaskLabel, blank=True, related_name="tasks")
+    archived = models.BooleanField(default=False, db_index=True)
+    archived_at = models.DateTimeField(null=True, blank=True)
+    is_completed = models.BooleanField(default=False, db_index=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -146,6 +172,7 @@ class Task(TimestampedModel):
             models.Index(fields=("project", "status")),
             models.Index(fields=("current_assignee", "status")),
             models.Index(fields=("due_date", "status")),
+            models.Index(fields=("archived", "status")),
         ]
 
     def __str__(self):
@@ -165,6 +192,51 @@ class Task(TimestampedModel):
         if save:
             self.save(update_fields=["actual_minutes", "updated_at"])
         return self.actual_minutes
+
+
+class TaskChecklistItem(TimestampedModel):
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="checklist_items")
+    title = models.CharField(max_length=255)
+    done = models.BooleanField(default=False, db_index=True)
+    sort_order = models.PositiveIntegerField(default=0)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="created_task_checklist_items",
+    )
+    completed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="completed_task_checklist_items",
+    )
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ("sort_order", "created_at")
+
+    def __str__(self):
+        return self.title
+
+
+class TaskAttachment(TimestampedModel):
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="attachments")
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="uploaded_task_attachments",
+    )
+    file = models.FileField(upload_to="design_workflow/task_attachments/%Y/%m/")
+    name = models.CharField(max_length=255)
+    mime_type = models.CharField(max_length=120, blank=True)
+    size = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ("-created_at",)
+
+    def __str__(self):
+        return self.name
 
 
 class TimeEntry(TimestampedModel):
@@ -256,3 +328,86 @@ class Notification(models.Model):
     def is_read(self) -> bool:
         return self.read_at is not None
 
+
+
+class ChatThreadKind(models.TextChoices):
+    PUBLIC = "public", "Public"
+    PRIVATE = "private", "Private"
+
+
+class ChatThread(TimestampedModel):
+    kind = models.CharField(max_length=16, choices=ChatThreadKind.choices, db_index=True)
+    title = models.CharField(max_length=255, blank=True)
+    participants = models.ManyToManyField(
+        settings.AUTH_USER_MODEL,
+        blank=True,
+        related_name="design_chat_threads",
+    )
+
+    class Meta:
+        ordering = ("-updated_at",)
+
+    def __str__(self):
+        return self.title or self.kind
+
+
+class ChatMessage(TimestampedModel):
+    thread = models.ForeignKey(ChatThread, on_delete=models.CASCADE, related_name="messages")
+    sender = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="design_chat_messages",
+    )
+    reply_to = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="replies",
+    )
+    body = models.TextField(blank=True)
+    read_by = models.ManyToManyField(
+        settings.AUTH_USER_MODEL,
+        blank=True,
+        related_name="read_design_chat_messages",
+    )
+    mentions = models.ManyToManyField(
+        settings.AUTH_USER_MODEL,
+        blank=True,
+        related_name="mentioned_design_chat_messages",
+    )
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="deleted_design_chat_messages",
+    )
+    deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    class Meta:
+        ordering = ("created_at",)
+
+    def __str__(self):
+        return f"{self.thread_id}:{self.sender_id}"
+
+    @property
+    def is_read(self) -> bool:
+        participant_count = self.thread.participants.count()
+        if self.thread.kind == ChatThreadKind.PUBLIC:
+            return False
+        return self.read_by.count() >= participant_count
+
+
+class ChatMessageAttachment(TimestampedModel):
+    message = models.ForeignKey(ChatMessage, on_delete=models.CASCADE, related_name="attachments")
+    file = models.FileField(upload_to="design_workflow/chat_attachments/%Y/%m/")
+    name = models.CharField(max_length=255)
+    mime_type = models.CharField(max_length=120, blank=True)
+    size = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ("created_at",)
+
+    def __str__(self):
+        return self.name
