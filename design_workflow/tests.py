@@ -132,3 +132,149 @@ class TestProjectDetailPayload:
         assert response.status_code == 200
         assert response.data["tasks"][0]["id"] == task.id
         assert response.data["recent_activity"][0]["task_title"] == task.title
+
+
+class TestTaskCreation:
+    def test_designer_can_create_task_assigned_to_self(self):
+        manager = make_manager("manager-task-create@test.com")
+        designer = make_designer("designer-task-create@test.com")
+        other_designer = make_designer("other-designer-task-create@test.com")
+        project = Project.objects.create(
+            name="Quick board cards",
+            description="Flexible intake",
+            manager=manager,
+            priority=Priority.MEDIUM,
+            status=ProjectStatus.ACTIVE,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=designer)
+        response = client.post(
+            "/api/design-workflow/tasks/",
+            {
+                "project_id": project.id,
+                "title": "Draft homepage hero",
+                "description": "",
+                "current_assignee_id": other_designer.id,
+                "status": TaskStatus.TODO,
+                "priority": Priority.MEDIUM,
+                "estimated_minutes": 60,
+                "sort_order": 0,
+            },
+            format="json",
+        )
+
+        assert response.status_code == 201
+        task = Task.objects.get(title="Draft homepage hero")
+        assert task.created_by == designer
+        assert task.current_assignee == designer
+        assert task.estimated_minutes == 0
+        assert response.data["current_assignee"]["id"] == designer.id
+
+
+class TestTaskWorkDayAutomation:
+    def test_in_progress_starts_session_without_fake_time_entry(self):
+        manager = make_manager("manager-work-session@test.com")
+        designer = make_designer("designer-work-session@test.com")
+        project = Project.objects.create(
+            name="Villa living room",
+            description="Interior design",
+            manager=manager,
+            priority=Priority.MEDIUM,
+            status=ProjectStatus.ACTIVE,
+        )
+        task = Task.objects.create(
+            project=project,
+            title="Concept board",
+            current_assignee=designer,
+            status=TaskStatus.TODO,
+            priority=Priority.MEDIUM,
+            created_by=manager,
+            updated_by=manager,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=designer)
+        response = client.patch(
+            f"/api/design-workflow/tasks/{task.id}/status/",
+            {"status": TaskStatus.IN_PROGRESS},
+            format="json",
+        )
+
+        assert response.status_code == 200
+        task.refresh_from_db()
+        assert task.work_started_at is not None
+        assert task.time_entries.count() == 0
+
+    def test_leaving_in_progress_logs_one_work_day(self):
+        manager = make_manager("manager-work-close@test.com")
+        designer = make_designer("designer-work-close@test.com")
+        project = Project.objects.create(
+            name="Villa bedroom",
+            description="Interior design",
+            manager=manager,
+            priority=Priority.MEDIUM,
+            status=ProjectStatus.ACTIVE,
+        )
+        task = Task.objects.create(
+            project=project,
+            title="Render draft",
+            current_assignee=designer,
+            status=TaskStatus.TODO,
+            priority=Priority.MEDIUM,
+            created_by=manager,
+            updated_by=manager,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=designer)
+        response = client.patch(
+            f"/api/design-workflow/tasks/{task.id}/status/",
+            {"status": TaskStatus.IN_PROGRESS},
+            format="json",
+        )
+        assert response.status_code == 200
+
+        response = client.patch(
+            f"/api/design-workflow/tasks/{task.id}/status/",
+            {"status": TaskStatus.IN_REVIEW},
+            format="json",
+        )
+
+        assert response.status_code == 200
+        task.refresh_from_db()
+        assert task.work_started_at is None
+        assert task.actual_minutes == 540
+        assert task.time_entries.count() == 1
+        assert task.time_entries.first().minutes == 540
+
+    def test_designer_cannot_manually_log_time(self):
+        manager = make_manager("manager-manual-time@test.com")
+        designer = make_designer("designer-manual-time@test.com")
+        project = Project.objects.create(
+            name="Villa hallway",
+            description="Interior design",
+            manager=manager,
+            priority=Priority.MEDIUM,
+            status=ProjectStatus.ACTIVE,
+        )
+        task = Task.objects.create(
+            project=project,
+            title="Material board",
+            current_assignee=designer,
+            status=TaskStatus.TODO,
+            priority=Priority.MEDIUM,
+            created_by=manager,
+            updated_by=manager,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=designer)
+        response = client.post(
+            f"/api/design-workflow/tasks/{task.id}/time-entries/",
+            {"minutes": 540, "note": "Manual day"},
+            format="json",
+        )
+
+        assert response.status_code == 403
+        assert task.time_entries.count() == 0

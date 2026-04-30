@@ -1,5 +1,3 @@
-import asyncio
-from typing import Any
 from urllib.parse import parse_qs
 
 from channels.auth import AuthMiddlewareStack
@@ -14,37 +12,6 @@ from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.tokens import UntypedToken
 
 from account.models import CustomUser
-
-
-class _AwaitableUser:
-    """Wraps a user or coroutine to be awaitable and expose attributes synchronously."""
-
-    def __init__(self, coro_or_user: Any):
-        if asyncio.iscoroutine(coro_or_user):
-            self._coro = coro_or_user
-            self._user = None
-        else:
-            self._coro = None
-            self._user = coro_or_user
-
-    def __getattr__(self, name: str) -> Any:
-        if self._user is not None:
-            return getattr(self._user, name)
-        raise AttributeError(f"attribute {name!r} not available until user is awaited")
-
-    def __await__(self):
-        if self._user is not None:
-
-            async def _ret():
-                return self._user
-
-            return _ret().__await__()
-
-        async def _wrap():
-            self._user = await self._coro
-            return self._user
-
-        return _wrap().__await__()
 
 
 class SimpleJwtTokenAuthMiddleware(BaseMiddleware):
@@ -75,23 +42,22 @@ class SimpleJwtTokenAuthMiddleware(BaseMiddleware):
             token = None
 
         if not token:
-            scope["user"] = _AwaitableUser(AnonymousUser())  # type: ignore[arg-type]
+            scope["user"] = AnonymousUser()
             await self._reject_connection(send)
             return None
 
         try:
             UntypedToken(token)  # type: ignore[arg-type]
         except (InvalidToken, TokenError):
-            scope["user"] = _AwaitableUser(AnonymousUser())  # type: ignore[arg-type]
+            scope["user"] = AnonymousUser()
             await self._reject_connection(send)
             return None
 
         try:
             decoded_data = jwt_decode(token, settings.SECRET_KEY, algorithms=["HS256"])
-            user = self.get_user_from_token(decoded_data["user_id"])  # type: ignore[arg-type]
-            scope["user"] = _AwaitableUser(user)  # type: ignore[arg-type]
+            scope["user"] = await self.get_user_from_token(decoded_data["user_id"])
         except (KeyError, CustomUser.DoesNotExist, DecodeError):
-            scope["user"] = _AwaitableUser(AnonymousUser())  # type: ignore[arg-type]
+            scope["user"] = AnonymousUser()
             await self._reject_connection(send)
             return None
 

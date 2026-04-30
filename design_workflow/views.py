@@ -1,9 +1,11 @@
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 import re
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.contrib.auth import get_user_model
+from django.core.files.base import ContentFile
+from django.db import transaction
 from django.db.models import Q, Sum
 from django.http import Http404
 from django.utils import timezone
@@ -14,6 +16,9 @@ from rest_framework.views import APIView
 from .models import (
     ChatMessage,
     ChatMessageAttachment,
+    ChatMessageEdit,
+    ChatMessageReaction,
+    ChatMessageReminder,
     ChatThread,
     ChatThreadKind,
     Notification,
@@ -23,6 +28,7 @@ from .models import (
     Task,
     TaskActivityType,
     TaskAttachment,
+    TaskChecklist,
     TaskChecklistItem,
     TaskLabel,
     TaskStatus,
@@ -31,11 +37,16 @@ from .models import (
 from .permissions import IsManager, IsManagerOrReadOnly, can_mutate_task
 from .serializers import (
     ChatMessageCreateSerializer,
+    ChatMessageDecisionSerializer,
+    ChatMessageReactionSerializer,
+    ChatMessageReminderCreateSerializer,
     ChatMessageSerializer,
+    ChatMessageUpdateSerializer,
     ChatThreadCreateSerializer,
     ChatThreadSerializer,
     ChecklistItemCreateSerializer,
     ChecklistItemUpdateSerializer,
+    ChecklistCreateSerializer,
     CommentCreateSerializer,
     DashboardSummarySerializer,
     NotificationItemSerializer,
@@ -47,9 +58,11 @@ from .serializers import (
     TaskAttachmentSerializer,
     TaskCardSerializer,
     TaskChecklistItemSerializer,
+    TaskChecklistSerializer,
     TaskDetailSerializer,
     TaskLabelSerializer,
     TaskReassignSerializer,
+    TaskReorderSerializer,
     TaskStatusUpdateSerializer,
     TaskWriteSerializer,
     TimeEntryCreateSerializer,
@@ -62,10 +75,10 @@ from .serializers import (
 from .services import (
     broadcast_task_event,
     create_notification,
-    log_automatic_time_entry,
     mark_notification_read,
     record_task_activity,
     related_task_user_ids,
+    sync_task_work_session,
 )
 
 User = get_user_model()
@@ -86,6 +99,25 @@ def get_task_queryset():
         Task.objects.select_related("project", "project__manager", "current_assignee")
         .prefetch_related(
             "labels",
+            "checklists__created_by",
+            "checklists__items__created_by",
+            "checklists__items__completed_by",
+            "checklist_items__created_by",
+            "checklist_items__completed_by",
+            "attachments__uploaded_by",
+        )
+        .all()
+    )
+
+
+def get_task_detail_queryset():
+    return (
+        Task.objects.select_related("project", "project__manager", "current_assignee")
+        .prefetch_related(
+            "labels",
+            "checklists__created_by",
+            "checklists__items__created_by",
+            "checklists__items__completed_by",
             "checklist_items__created_by",
             "checklist_items__completed_by",
             "attachments__uploaded_by",
@@ -123,7 +155,7 @@ def apply_task_filters(queryset, params, user):
 
 def get_task_or_404(pk: int) -> Task:
     try:
-        return get_task_queryset().get(pk=pk)
+        return get_task_detail_queryset().get(pk=pk)
     except Task.DoesNotExist as exc:
         raise Http404 from exc
 
@@ -146,6 +178,37 @@ def get_thread_or_404(request, pk: int) -> ChatThread:
     if thread.kind == ChatThreadKind.PRIVATE and not thread.participants.filter(id=request.user.id).exists():
         raise Http404
     return thread
+
+
+def get_chat_message_queryset():
+    return ChatMessage.objects.select_related(
+        "thread",
+        "sender",
+        "reply_to",
+        "reply_to__sender",
+        "deleted_by",
+        "edited_by",
+        "decision_by",
+    ).prefetch_related(
+        "attachments",
+        "read_by",
+        "thread__participants",
+        "mentions",
+        "reactions__user",
+        "reminders__task__project",
+        "reminders__created_by",
+        "edit_history",
+    )
+
+
+def get_chat_message_or_404(request, pk: int) -> ChatMessage:
+    try:
+        message = get_chat_message_queryset().get(pk=pk)
+    except ChatMessage.DoesNotExist as exc:
+        raise Http404 from exc
+    if message.thread.kind == ChatThreadKind.PRIVATE and not message.thread.participants.filter(id=request.user.id).exists():
+        raise Http404
+    return message
 
 
 def broadcast_chat_event(thread: ChatThread, payload: dict):
@@ -271,9 +334,11 @@ class TaskListCreateView(APIView):
         return Response(TaskCardSerializer(queryset, many=True, context={"request": request}).data, status=status.HTTP_200_OK)
 
     def post(self, request):
+        data = request.data.copy()
         if request.user.role != "manager":
-            return Response(status=status.HTTP_403_FORBIDDEN)
-        serializer = TaskWriteSerializer(data=request.data)
+            data["current_assignee_id"] = request.user.id
+            data.pop("estimated_minutes", None)
+        serializer = TaskWriteSerializer(data=data)
         serializer.is_valid(raise_exception=True)
         task = serializer.save(created_by=request.user, updated_by=request.user)
         record_task_activity(task, request.user, TaskActivityType.CREATED, {"status": task.status, "assignee_id": task.current_assignee_id})
@@ -286,7 +351,7 @@ class TaskListCreateView(APIView):
                 payload={"title": task.title},
             )
         broadcast_task_event(task, "created")
-        return Response(TaskDetailSerializer(get_task_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_201_CREATED)
+        return Response(TaskDetailSerializer(get_task_detail_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_201_CREATED)
 
 
 class TaskDetailView(APIView):
@@ -311,14 +376,13 @@ class TaskDetailView(APIView):
         task = serializer.save(updated_by=request.user)
         if previous["status"] != task.status:
             record_task_activity(task, request.user, TaskActivityType.STATUS_CHANGED, previous | {"next": task.status})
-            if previous["status"] != TaskStatus.IN_PROGRESS and task.status == TaskStatus.IN_PROGRESS:
-                log_automatic_time_entry(
-                    task,
-                    user=request.user,
-                    minutes=15,
-                    note="Automatic workflow entry: task moved to In progress.",
-                    event="status_in_progress",
-                )
+            sync_task_work_session(
+                task,
+                user=request.user,
+                previous_status=previous["status"],
+                next_status=task.status,
+                event="status_changed",
+            )
         if previous["priority"] != task.priority:
             record_task_activity(task, request.user, TaskActivityType.PRIORITY_CHANGED, previous | {"next": task.priority})
         if previous["due_date"] != (task.due_date.isoformat() if task.due_date else None):
@@ -333,17 +397,10 @@ class TaskDetailView(APIView):
                     project=task.project,
                     payload={"reason": "Assignment updated from task editor."},
                 )
-            log_automatic_time_entry(
-                task,
-                user=request.user,
-                minutes=5,
-                note="Automatic workflow entry: assignee updated.",
-                event="assignee_changed",
-            )
         if "labels" in serializer.validated_data:
             record_task_activity(task, request.user, TaskActivityType.LABEL_UPDATED, {"previous": previous["label_ids"], "next": list(task.labels.values_list("id", flat=True))})
         broadcast_task_event(task, "updated")
-        return Response(TaskDetailSerializer(get_task_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_200_OK)
+        return Response(TaskDetailSerializer(get_task_detail_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_200_OK)
 
 
 class TaskStatusView(APIView):
@@ -364,18 +421,96 @@ class TaskStatusView(APIView):
         task.updated_by = request.user
         task.save(update_fields=["status", "blocked_reason", "sort_order", "updated_by", "updated_at"])
         record_task_activity(task, request.user, TaskActivityType.STATUS_CHANGED, {"previous_status": previous_status, "status": task.status, "blocked_reason": task.blocked_reason})
-        if previous_status != TaskStatus.IN_PROGRESS and task.status == TaskStatus.IN_PROGRESS:
-            log_automatic_time_entry(
-                task,
-                user=request.user,
-                minutes=15,
-                note="Automatic workflow entry: task moved to In progress.",
-                event="status_in_progress",
-            )
+        sync_task_work_session(
+            task,
+            user=request.user,
+            previous_status=previous_status,
+            next_status=task.status,
+            event="status_changed",
+        )
         if task.current_assignee_id and task.current_assignee_id != request.user.id:
             create_notification(recipient=task.current_assignee, notification_type=NotificationType.TASK_STATUS, task=task, project=task.project, payload={"status": task.status})
         broadcast_task_event(task, "status_changed", recipients=related_task_user_ids(task))
-        return Response(TaskDetailSerializer(get_task_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_200_OK)
+        return Response(TaskDetailSerializer(get_task_detail_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_200_OK)
+
+
+class TaskReorderView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def patch(self, request):
+        serializer = TaskReorderSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        moved_task_id = serializer.validated_data["moved_task_id"]
+        ordered_items = serializer.validated_data["tasks"]
+        ordered_ids = [item["id"] for item in ordered_items]
+
+        with transaction.atomic():
+            tasks_by_id = {
+                task.id: task
+                for task in Task.objects.select_related("project", "current_assignee").select_for_update(of=("self",)).filter(id__in=ordered_ids)
+            }
+            moved_task = tasks_by_id.get(moved_task_id) or get_task_or_404(moved_task_id)
+            if not can_mutate_task(request.user, moved_task):
+                return Response(status=status.HTTP_403_FORBIDDEN)
+
+            updated_tasks = []
+            updated_at = timezone.now()
+            moved_previous_status = moved_task.status
+            for item in ordered_items:
+                task = tasks_by_id.get(item["id"])
+                if task is None:
+                    continue
+                changed = False
+                if task.status != item["status"]:
+                    task.status = item["status"]
+                    changed = True
+                if task.sort_order != item["sort_order"]:
+                    task.sort_order = item["sort_order"]
+                    changed = True
+                if changed:
+                    task.updated_by = request.user
+                    task.updated_at = updated_at
+                    updated_tasks.append(task)
+
+            if updated_tasks:
+                Task.objects.bulk_update(updated_tasks, ["status", "sort_order", "updated_by", "updated_at"])
+
+            moved_task.refresh_from_db()
+            if moved_previous_status != moved_task.status:
+                record_task_activity(
+                    moved_task,
+                    request.user,
+                    TaskActivityType.STATUS_CHANGED,
+                    {"previous_status": moved_previous_status, "status": moved_task.status, "event": "board_reorder"},
+                )
+                sync_task_work_session(
+                    moved_task,
+                    user=request.user,
+                    previous_status=moved_previous_status,
+                    next_status=moved_task.status,
+                    event="board_reorder",
+                )
+                if moved_task.current_assignee_id and moved_task.current_assignee_id != request.user.id:
+                    create_notification(
+                        recipient=moved_task.current_assignee,
+                        notification_type=NotificationType.TASK_STATUS,
+                        task=moved_task,
+                        project=moved_task.project,
+                        payload={"status": moved_task.status},
+                    )
+            elif updated_tasks:
+                record_task_activity(
+                    moved_task,
+                    request.user,
+                    TaskActivityType.UPDATED,
+                    {"event": "board_reorder", "sort_order": moved_task.sort_order},
+                )
+
+        if updated_tasks:
+            broadcast_task_event(moved_task, "reordered")
+
+        response_tasks = get_task_queryset().filter(id__in=ordered_ids)
+        return Response(TaskCardSerializer(response_tasks, many=True, context={"request": request}).data, status=status.HTTP_200_OK)
 
 
 class TaskCompletionView(APIView):
@@ -393,7 +528,7 @@ class TaskCompletionView(APIView):
         task.save(update_fields=["is_completed", "completed_at", "updated_by", "updated_at"])
         record_task_activity(task, request.user, TaskActivityType.UPDATED, {"is_completed": task.is_completed})
         broadcast_task_event(task, "completion_changed", recipients=related_task_user_ids(task))
-        return Response(TaskDetailSerializer(get_task_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_200_OK)
+        return Response(TaskDetailSerializer(get_task_detail_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_200_OK)
 
 
 class TaskArchiveView(APIView):
@@ -411,7 +546,7 @@ class TaskArchiveView(APIView):
         task.save(update_fields=["archived", "archived_at", "updated_by", "updated_at"])
         record_task_activity(task, request.user, TaskActivityType.TASK_ARCHIVED, {"archived": task.archived})
         broadcast_task_event(task, "archived" if task.archived else "restored", recipients=related_task_user_ids(task))
-        return Response(TaskDetailSerializer(get_task_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_200_OK)
+        return Response(TaskDetailSerializer(get_task_detail_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_200_OK)
 
 
 class TaskCoverImageView(APIView):
@@ -430,7 +565,7 @@ class TaskCoverImageView(APIView):
         task.save(update_fields=["cover_image", "updated_by", "updated_at"])
         record_task_activity(task, request.user, TaskActivityType.ATTACHMENT_ADDED, {"cover_image": True, "name": cover_image.name})
         broadcast_task_event(task, "cover_updated", recipients=related_task_user_ids(task))
-        return Response(TaskDetailSerializer(get_task_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_200_OK)
+        return Response(TaskDetailSerializer(get_task_detail_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_200_OK)
 
     def delete(self, request, pk: int):
         task = get_task_or_404(pk)
@@ -443,7 +578,7 @@ class TaskCoverImageView(APIView):
         task.save(update_fields=["cover_image", "updated_by", "updated_at"])
         record_task_activity(task, request.user, TaskActivityType.ATTACHMENT_ADDED, {"cover_image": True, "removed": True})
         broadcast_task_event(task, "cover_deleted", recipients=related_task_user_ids(task))
-        return Response(TaskDetailSerializer(get_task_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_200_OK)
+        return Response(TaskDetailSerializer(get_task_detail_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_200_OK)
 
 
 class TaskLabelListCreateView(APIView):
@@ -461,6 +596,37 @@ class TaskLabelListCreateView(APIView):
         return Response(TaskLabelSerializer(label).data, status=status.HTTP_201_CREATED)
 
 
+def ensure_default_checklist(task: Task, user) -> TaskChecklist:
+    checklist = task.checklists.order_by("sort_order", "created_at").first()
+    if checklist:
+        return checklist
+    return TaskChecklist.objects.create(
+        task=task,
+        title="Checklist",
+        sort_order=0,
+        created_by=user,
+    )
+
+
+class TaskChecklistGroupListView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get(self, request, pk: int):
+        task = get_task_or_404(pk)
+        return Response(TaskChecklistSerializer(task.checklists.all(), many=True).data, status=status.HTTP_200_OK)
+
+    def post(self, request, pk: int):
+        task = get_task_or_404(pk)
+        if not can_mutate_task(request.user, task):
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        serializer = ChecklistCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        checklist = serializer.save(task=task, created_by=request.user)
+        record_task_activity(task, request.user, TaskActivityType.CHECKLIST_UPDATED, {"checklist_id": checklist.id, "action": "created"})
+        broadcast_task_event(task, "checklist_updated", recipients=related_task_user_ids(task))
+        return Response(TaskChecklistSerializer(checklist).data, status=status.HTTP_201_CREATED)
+
+
 class TaskChecklistListView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
@@ -474,8 +640,16 @@ class TaskChecklistListView(APIView):
             return Response(status=status.HTTP_403_FORBIDDEN)
         serializer = ChecklistItemCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        item = serializer.save(task=task, created_by=request.user)
-        record_task_activity(task, request.user, TaskActivityType.CHECKLIST_UPDATED, {"item_id": item.id, "action": "created"})
+        checklist_id = serializer.validated_data.pop("checklist_id", None)
+        if checklist_id:
+            try:
+                checklist = task.checklists.get(pk=checklist_id)
+            except TaskChecklist.DoesNotExist as exc:
+                raise Http404 from exc
+        else:
+            checklist = ensure_default_checklist(task, request.user)
+        item = serializer.save(task=task, checklist=checklist, created_by=request.user)
+        record_task_activity(task, request.user, TaskActivityType.CHECKLIST_UPDATED, {"item_id": item.id, "checklist_id": checklist.id, "action": "created"})
         broadcast_task_event(task, "checklist_updated", recipients=related_task_user_ids(task))
         return Response(TaskChecklistItemSerializer(item).data, status=status.HTTP_201_CREATED)
 
@@ -552,6 +726,28 @@ class TaskAttachmentsView(APIView):
 class TaskAttachmentDetailView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
+    def post(self, request, pk: int, attachment_id: int):
+        task = get_task_or_404(pk)
+        if not can_mutate_task(request.user, task):
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        try:
+            attachment = task.attachments.get(pk=attachment_id)
+        except TaskAttachment.DoesNotExist as exc:
+            raise Http404 from exc
+        is_image_attachment = attachment.mime_type.startswith("image/") or bool(re.search(r"\.(avif|bmp|gif|jpe?g|png|svg|webp)$", attachment.name, re.IGNORECASE))
+        if not is_image_attachment:
+            return Response({"attachment": ["Only image attachments can be used as cover images."]}, status=status.HTTP_400_BAD_REQUEST)
+        attachment.file.open("rb")
+        try:
+            task.cover_image.save(attachment.name, ContentFile(attachment.file.read()), save=False)
+        finally:
+            attachment.file.close()
+        task.updated_by = request.user
+        task.save(update_fields=["cover_image", "updated_by", "updated_at"])
+        record_task_activity(task, request.user, TaskActivityType.ATTACHMENT_ADDED, {"cover_image": True, "attachment_id": attachment.id, "name": attachment.name})
+        broadcast_task_event(task, "cover_updated", recipients=related_task_user_ids(task))
+        return Response(TaskDetailSerializer(get_task_detail_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_200_OK)
+
     def delete(self, request, pk: int, attachment_id: int):
         task = get_task_or_404(pk)
         if not can_mutate_task(request.user, task):
@@ -580,15 +776,8 @@ class TaskReassignView(APIView):
         task.save(update_fields=["current_assignee", "updated_by", "updated_at"])
         record_task_activity(task, request.user, TaskActivityType.REASSIGNED, {"previous_assignee_id": previous_assignee_id, "assignee_id": assignee.id, "reason": reason})
         create_notification(recipient=assignee, notification_type=NotificationType.TASK_REASSIGNED, task=task, project=task.project, payload={"reason": reason})
-        log_automatic_time_entry(
-            task,
-            user=request.user,
-            minutes=5,
-            note="Automatic workflow entry: task reassigned.",
-            event="task_reassigned",
-        )
         broadcast_task_event(task, "reassigned")
-        return Response(TaskDetailSerializer(get_task_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_200_OK)
+        return Response(TaskDetailSerializer(get_task_detail_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_200_OK)
 
 
 class TaskCommentsView(APIView):
@@ -617,10 +806,14 @@ class TaskTimeEntriesView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def get(self, request, pk: int):
+        if request.user.role != "manager":
+            return Response(status=status.HTTP_403_FORBIDDEN)
         task = get_task_or_404(pk)
         return Response(TimeEntrySerializer(task.time_entries.select_related("user"), many=True).data, status=status.HTTP_200_OK)
 
     def post(self, request, pk: int):
+        if request.user.role != "manager":
+            return Response(status=status.HTTP_403_FORBIDDEN)
         task = get_task_or_404(pk)
         if not can_mutate_task(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
@@ -735,7 +928,7 @@ class ChatMessagesView(APIView):
 
     def get(self, request, pk: int):
         thread = get_thread_or_404(request, pk)
-        queryset = thread.messages.select_related("sender", "reply_to", "reply_to__sender", "deleted_by").prefetch_related("attachments", "read_by", "mentions").order_by("-id")
+        queryset = get_chat_message_queryset().filter(thread=thread).order_by("-id")
         before_id = request.query_params.get("before_id")
         if before_id and before_id.isdigit():
             queryset = queryset.filter(id__lt=int(before_id))
@@ -748,6 +941,33 @@ class ChatMessagesView(APIView):
                 | Q(sender__email__icontains=search)
                 | Q(attachments__name__icontains=search)
             ).distinct()
+        sender_id = request.query_params.get("sender_id")
+        if sender_id and sender_id.isdigit():
+            queryset = queryset.filter(sender_id=int(sender_id))
+        date_from = request.query_params.get("date_from")
+        if date_from:
+            queryset = queryset.filter(created_at__date__gte=date_from)
+        date_to = request.query_params.get("date_to")
+        if date_to:
+            queryset = queryset.filter(created_at__date__lte=date_to)
+        if parse_bool(request.query_params.get("has_files")):
+            queryset = queryset.filter(attachments__isnull=False).distinct()
+        if parse_bool(request.query_params.get("has_images")):
+            queryset = queryset.filter(
+                Q(attachments__mime_type__startswith="image/")
+                | Q(attachments__name__iendswith=".png")
+                | Q(attachments__name__iendswith=".jpg")
+                | Q(attachments__name__iendswith=".jpeg")
+                | Q(attachments__name__iendswith=".gif")
+                | Q(attachments__name__iendswith=".webp")
+                | Q(attachments__name__iendswith=".bmp")
+                | Q(attachments__name__iendswith=".svg")
+            ).distinct()
+        if parse_bool(request.query_params.get("decisions")):
+            queryset = queryset.filter(decision_at__isnull=False)
+        reference = (request.query_params.get("reference") or "").strip()
+        if reference:
+            queryset = queryset.filter(body__icontains=reference)
         try:
             limit = max(10, min(int(request.query_params.get("limit", 40)), 60))
         except (TypeError, ValueError):
@@ -796,7 +1016,7 @@ class ChatMessagesView(APIView):
                 notification_type=NotificationType.CHAT_MESSAGE,
                 payload={"thread_id": thread.id, "message_id": message.id, "title": f"@ mention from {request.user.first_name or request.user.email}"},
             )
-        message = ChatMessage.objects.select_related("thread", "sender", "reply_to", "reply_to__sender").prefetch_related("attachments", "read_by", "thread__participants", "mentions").get(pk=message.pk)
+        message = get_chat_message_queryset().get(pk=message.pk)
         broadcast_chat_message(message, request)
         return Response(ChatMessageSerializer(message, context={"request": request}).data, status=status.HTTP_201_CREATED)
 
@@ -805,12 +1025,7 @@ class ChatMessageReadView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def post(self, request, pk: int):
-        try:
-            message = ChatMessage.objects.select_related("thread", "sender", "reply_to", "reply_to__sender").prefetch_related("attachments", "read_by", "thread__participants", "mentions").get(pk=pk)
-        except ChatMessage.DoesNotExist as exc:
-            raise Http404 from exc
-        if message.thread.kind == ChatThreadKind.PRIVATE and not message.thread.participants.filter(id=request.user.id).exists():
-            return Response(status=status.HTTP_403_FORBIDDEN)
+        message = get_chat_message_or_404(request, pk)
         message.read_by.add(request.user)
         payload = {"type": "chat.read", "message_id": message.id, "thread_id": message.thread_id, "user_id": request.user.id}
         broadcast_chat_event(message.thread, payload)
@@ -821,12 +1036,7 @@ class ChatMessageDeleteView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def post(self, request, pk: int):
-        try:
-            message = ChatMessage.objects.select_related("thread", "sender", "reply_to", "reply_to__sender").prefetch_related("attachments", "read_by", "thread__participants", "mentions").get(pk=pk)
-        except ChatMessage.DoesNotExist as exc:
-            raise Http404 from exc
-        if message.thread.kind == ChatThreadKind.PRIVATE and not message.thread.participants.filter(id=request.user.id).exists():
-            return Response(status=status.HTTP_403_FORBIDDEN)
+        message = get_chat_message_or_404(request, pk)
         if message.sender_id != request.user.id and not request.user.is_staff and not request.user.is_superuser:
             return Response(status=status.HTTP_403_FORBIDDEN)
         if not message.deleted_at:
@@ -837,3 +1047,97 @@ class ChatMessageDeleteView(APIView):
         payload = {"type": "chat.deleted", "message_id": message.id, "thread_id": message.thread_id}
         broadcast_chat_event(message.thread, payload)
         return Response(ChatMessageSerializer(message, context={"request": request}).data, status=status.HTTP_200_OK)
+
+
+class ChatMessageUpdateView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def patch(self, request, pk: int):
+        message = get_chat_message_or_404(request, pk)
+        if message.sender_id != request.user.id or message.deleted_at:
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        serializer = ChatMessageUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        new_body = serializer.validated_data["body"].strip()
+        if new_body == message.body:
+            return Response(ChatMessageSerializer(message, context={"request": request}).data, status=status.HTTP_200_OK)
+        ChatMessageEdit.objects.create(
+            message=message,
+            edited_by=request.user,
+            previous_body=message.body,
+            new_body=new_body,
+        )
+        message.body = new_body
+        message.edited_by = request.user
+        message.edited_at = timezone.now()
+        message.save(update_fields=["body", "edited_by", "edited_at", "updated_at"])
+        message = get_chat_message_queryset().get(pk=message.pk)
+        payload = {"type": "chat.updated", "message_id": message.id, "thread_id": message.thread_id}
+        broadcast_chat_event(message.thread, payload)
+        return Response(ChatMessageSerializer(message, context={"request": request}).data, status=status.HTTP_200_OK)
+
+
+class ChatMessageReactionView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def post(self, request, pk: int):
+        message = get_chat_message_or_404(request, pk)
+        if message.deleted_at:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+        serializer = ChatMessageReactionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        emoji = serializer.validated_data["emoji"]
+        reaction, created = ChatMessageReaction.objects.get_or_create(message=message, user=request.user, emoji=emoji)
+        if not created:
+            reaction.delete()
+        message = get_chat_message_queryset().get(pk=message.pk)
+        payload = {"type": "chat.reaction", "message_id": message.id, "thread_id": message.thread_id}
+        broadcast_chat_event(message.thread, payload)
+        return Response(ChatMessageSerializer(message, context={"request": request}).data, status=status.HTTP_200_OK)
+
+
+class ChatMessageDecisionView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def post(self, request, pk: int):
+        message = get_chat_message_or_404(request, pk)
+        if message.deleted_at:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+        serializer = ChatMessageDecisionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        if serializer.validated_data["is_decision"]:
+            message.decision_by = request.user
+            message.decision_at = timezone.now()
+        else:
+            message.decision_by = None
+            message.decision_at = None
+        message.save(update_fields=["decision_by", "decision_at", "updated_at"])
+        message = get_chat_message_queryset().get(pk=message.pk)
+        payload = {"type": "chat.decision", "message_id": message.id, "thread_id": message.thread_id}
+        broadcast_chat_event(message.thread, payload)
+        return Response(ChatMessageSerializer(message, context={"request": request}).data, status=status.HTTP_200_OK)
+
+
+class ChatMessageReminderView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def post(self, request, pk: int):
+        message = get_chat_message_or_404(request, pk)
+        if message.deleted_at:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+        serializer = ChatMessageReminderCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        task = serializer.validated_data.get("task")
+        remind_at = serializer.validated_data.get("remind_at")
+        if remind_at is None and task and task.due_date:
+            remind_at = timezone.make_aware(datetime.combine(task.due_date, time(hour=9)))
+        reminder = ChatMessageReminder.objects.create(
+            message=message,
+            task=task,
+            created_by=request.user,
+            remind_at=remind_at,
+            note=serializer.validated_data.get("note", ""),
+        )
+        payload = {"type": "chat.reminder", "message_id": message.id, "thread_id": message.thread_id, "reminder_id": reminder.id}
+        broadcast_chat_event(message.thread, payload)
+        return Response(ChatMessageSerializer(get_chat_message_queryset().get(pk=message.pk), context={"request": request}).data, status=status.HTTP_201_CREATED)

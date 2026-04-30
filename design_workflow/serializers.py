@@ -6,6 +6,9 @@ from rest_framework import serializers
 from .models import (
     ChatMessage,
     ChatMessageAttachment,
+    ChatMessageEdit,
+    ChatMessageReaction,
+    ChatMessageReminder,
     ChatThread,
     ChatThreadKind,
     Notification,
@@ -13,6 +16,7 @@ from .models import (
     Task,
     TaskActivity,
     TaskAttachment,
+    TaskChecklist,
     TaskChecklistItem,
     TaskLabel,
     TaskStatus,
@@ -54,13 +58,23 @@ class TaskLabelSerializer(serializers.ModelSerializer):
 class TaskChecklistItemSerializer(serializers.ModelSerializer):
     created_by = UserSummarySerializer(read_only=True)
     completed_by = UserSummarySerializer(read_only=True)
+    checklist_id = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = TaskChecklistItem
         fields = (
-            "id", "title", "done", "sort_order", "created_by", "completed_by",
+            "id", "checklist_id", "title", "done", "sort_order", "created_by", "completed_by",
             "completed_at", "created_at", "updated_at",
         )
+
+
+class TaskChecklistSerializer(serializers.ModelSerializer):
+    created_by = UserSummarySerializer(read_only=True)
+    items = TaskChecklistItemSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = TaskChecklist
+        fields = ("id", "title", "sort_order", "created_by", "items", "created_at", "updated_at")
 
 
 class TaskAttachmentSerializer(serializers.ModelSerializer):
@@ -87,6 +101,7 @@ class TaskCardSerializer(serializers.ModelSerializer):
     project = ProjectSummarySerializer(read_only=True)
     current_assignee = UserSummarySerializer(read_only=True)
     labels = TaskLabelSerializer(many=True, read_only=True)
+    checklists = TaskChecklistSerializer(many=True, read_only=True)
     checklist_items = TaskChecklistItemSerializer(many=True, read_only=True)
     attachments = TaskAttachmentSerializer(many=True, read_only=True)
     is_overdue = serializers.BooleanField(read_only=True)
@@ -97,8 +112,8 @@ class TaskCardSerializer(serializers.ModelSerializer):
         fields = (
             "id", "project", "title", "description", "current_assignee", "status",
             "priority", "due_date", "estimated_minutes", "actual_minutes", "blocked_reason",
-            "sort_order", "labels", "checklist_items", "attachments", "cover_image_url", "archived", "archived_at",
-            "is_completed", "completed_at", "is_overdue", "created_at", "updated_at",
+            "sort_order", "labels", "checklists", "checklist_items", "attachments", "cover_image_url", "archived", "archived_at",
+            "is_completed", "completed_at", "work_started_at", "is_overdue", "created_at", "updated_at",
         )
 
     def get_cover_image_url(self, obj):
@@ -200,7 +215,15 @@ class ProjectDetailSerializer(ProjectSummarySerializer):
         fields = ProjectSummarySerializer.Meta.fields + ("tasks", "recent_comments", "recent_activity", "contributors")
 
     def get_tasks(self, obj):
-        tasks = obj.tasks.filter(archived=False).select_related("project__manager", "current_assignee").prefetch_related("labels", "checklist_items__created_by", "checklist_items__completed_by", "attachments__uploaded_by")
+        tasks = obj.tasks.filter(archived=False).select_related("project__manager", "current_assignee").prefetch_related(
+            "labels",
+            "checklists__created_by",
+            "checklists__items__created_by",
+            "checklists__items__completed_by",
+            "checklist_items__created_by",
+            "checklist_items__completed_by",
+            "attachments__uploaded_by",
+        )
         return TaskCardSerializer(tasks, many=True, context=self.context).data
 
     def get_recent_comments(self, obj):
@@ -295,6 +318,17 @@ class TaskStatusUpdateSerializer(serializers.Serializer):
     sort_order = serializers.IntegerField(required=False, min_value=0)
 
 
+class TaskReorderItemSerializer(serializers.Serializer):
+    id = serializers.IntegerField(min_value=1)
+    status = serializers.ChoiceField(choices=TaskStatus.choices)
+    sort_order = serializers.IntegerField(min_value=0)
+
+
+class TaskReorderSerializer(serializers.Serializer):
+    moved_task_id = serializers.IntegerField(min_value=1)
+    tasks = TaskReorderItemSerializer(many=True, allow_empty=False)
+
+
 class TaskCompletionSerializer(serializers.Serializer):
     is_completed = serializers.BooleanField(default=True)
 
@@ -326,15 +360,23 @@ class TimeEntryCreateSerializer(serializers.ModelSerializer):
 
 
 class ChecklistItemCreateSerializer(serializers.ModelSerializer):
+    checklist_id = serializers.IntegerField(required=False, write_only=True)
+
     class Meta:
         model = TaskChecklistItem
-        fields = ("title", "done", "sort_order")
+        fields = ("title", "done", "sort_order", "checklist_id")
 
 
 class ChecklistItemUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = TaskChecklistItem
         fields = ("title", "done", "sort_order")
+
+
+class ChecklistCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TaskChecklist
+        fields = ("title", "sort_order")
 
 
 class ChatAttachmentSerializer(serializers.ModelSerializer):
@@ -369,12 +411,42 @@ class ChatMessageReplySerializer(serializers.ModelSerializer):
         return "Message deleted" if obj.deleted_at else obj.body
 
 
+class ChatReactionSerializer(serializers.ModelSerializer):
+    user = UserSummarySerializer(read_only=True)
+
+    class Meta:
+        model = ChatMessageReaction
+        fields = ("id", "user", "emoji", "created_at")
+
+
+class ChatReminderSerializer(serializers.ModelSerializer):
+    task = TaskCardSerializer(read_only=True)
+    created_by = UserSummarySerializer(read_only=True)
+
+    class Meta:
+        model = ChatMessageReminder
+        fields = ("id", "task", "created_by", "remind_at", "note", "done_at", "created_at", "updated_at")
+
+
+class ChatEditSerializer(serializers.ModelSerializer):
+    edited_by = UserSummarySerializer(read_only=True)
+
+    class Meta:
+        model = ChatMessageEdit
+        fields = ("id", "edited_by", "previous_body", "new_body", "created_at")
+
+
 class ChatMessageSerializer(serializers.ModelSerializer):
     sender = UserSummarySerializer(read_only=True)
     attachments = ChatAttachmentSerializer(many=True, read_only=True)
     read_by = UserSummarySerializer(many=True, read_only=True)
     mentions = UserSummarySerializer(many=True, read_only=True)
     reply_to = ChatMessageReplySerializer(read_only=True)
+    reactions = ChatReactionSerializer(many=True, read_only=True)
+    reminders = ChatReminderSerializer(many=True, read_only=True)
+    edited_by = UserSummarySerializer(read_only=True)
+    decision_by = UserSummarySerializer(read_only=True)
+    edit_count = serializers.SerializerMethodField()
     is_read = serializers.BooleanField(read_only=True)
     is_deleted = serializers.SerializerMethodField()
     body = serializers.SerializerMethodField()
@@ -390,9 +462,16 @@ class ChatMessageSerializer(serializers.ModelSerializer):
             "read_by",
             "mentions",
             "reply_to",
+            "reactions",
+            "reminders",
             "is_read",
             "deleted_at",
             "is_deleted",
+            "edited_by",
+            "edited_at",
+            "edit_count",
+            "decision_by",
+            "decision_at",
             "created_at",
             "updated_at",
         )
@@ -402,6 +481,11 @@ class ChatMessageSerializer(serializers.ModelSerializer):
 
     def get_body(self, obj):
         return "Message deleted" if obj.deleted_at else obj.body
+
+    def get_edit_count(self, obj):
+        if hasattr(obj, "_prefetched_objects_cache") and "edit_history" in obj._prefetched_objects_cache:
+            return len(obj._prefetched_objects_cache["edit_history"])
+        return obj.edit_history.count()
 
 
 class ChatThreadSerializer(serializers.ModelSerializer):
@@ -414,7 +498,7 @@ class ChatThreadSerializer(serializers.ModelSerializer):
         fields = ("id", "kind", "title", "participants", "last_message", "unread_count", "created_at", "updated_at")
 
     def get_last_message(self, obj):
-        message = obj.messages.select_related("sender", "reply_to", "reply_to__sender").prefetch_related("attachments", "read_by", "mentions").last()
+        message = obj.messages.select_related("sender", "reply_to", "reply_to__sender", "edited_by", "decision_by").prefetch_related("attachments", "read_by", "mentions", "reactions__user", "reminders__task__project", "reminders__created_by", "edit_history").last()
         return ChatMessageSerializer(message, context=self.context).data if message else None
 
     def get_unread_count(self, obj):
@@ -433,3 +517,21 @@ class ChatThreadCreateSerializer(serializers.Serializer):
 class ChatMessageCreateSerializer(serializers.Serializer):
     body = serializers.CharField(required=False, allow_blank=True)
     reply_to_id = serializers.PrimaryKeyRelatedField(queryset=ChatMessage.objects.all(), source="reply_to", required=False, allow_null=True)
+
+
+class ChatMessageUpdateSerializer(serializers.Serializer):
+    body = serializers.CharField(required=True, allow_blank=False, trim_whitespace=True)
+
+
+class ChatMessageReactionSerializer(serializers.Serializer):
+    emoji = serializers.ChoiceField(choices=("✅", "👀", "👍", "⚠️"))
+
+
+class ChatMessageDecisionSerializer(serializers.Serializer):
+    is_decision = serializers.BooleanField(default=True)
+
+
+class ChatMessageReminderCreateSerializer(serializers.Serializer):
+    task_id = serializers.PrimaryKeyRelatedField(queryset=Task.objects.all(), source="task", required=False, allow_null=True)
+    remind_at = serializers.DateTimeField(required=False, allow_null=True)
+    note = serializers.CharField(required=False, allow_blank=True, max_length=255)

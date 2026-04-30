@@ -3,12 +3,16 @@ from django.contrib import admin
 from .models import (
     ChatMessage,
     ChatMessageAttachment,
+    ChatMessageEdit,
+    ChatMessageReaction,
+    ChatMessageReminder,
     ChatThread,
     Notification,
     Project,
     Task,
     TaskActivity,
     TaskAttachment,
+    TaskChecklist,
     TaskChecklistItem,
     TaskComment,
     TaskLabel,
@@ -64,8 +68,14 @@ class TaskLabelAdmin(admin.ModelAdmin):
 
 @admin.register(TaskChecklistItem)
 class TaskChecklistItemAdmin(admin.ModelAdmin):
-    list_display = ("task", "title", "done", "sort_order", "created_by")
+    list_display = ("task", "checklist", "title", "done", "sort_order", "created_by")
     list_filter = ("done",)
+    search_fields = ("title", "task__title")
+
+
+@admin.register(TaskChecklist)
+class TaskChecklistAdmin(admin.ModelAdmin):
+    list_display = ("task", "title", "sort_order", "created_by", "created_at")
     search_fields = ("title", "task__title")
 
 
@@ -84,7 +94,7 @@ class ChatThreadAdmin(admin.ModelAdmin):
 
 @admin.register(ChatMessage)
 class ChatMessageAdmin(admin.ModelAdmin):
-    list_display = ("thread", "sender", "created_at")
+    list_display = ("thread", "sender", "decision_at", "edited_at", "created_at")
     search_fields = ("body", "sender__email")
 
 
@@ -92,3 +102,21 @@ class ChatMessageAdmin(admin.ModelAdmin):
 class ChatMessageAttachmentAdmin(admin.ModelAdmin):
     list_display = ("message", "name", "size", "created_at")
     search_fields = ("name",)
+
+
+@admin.register(ChatMessageEdit)
+class ChatMessageEditAdmin(admin.ModelAdmin):
+    list_display = ("message", "edited_by", "created_at")
+    search_fields = ("previous_body", "new_body", "edited_by__email")
+
+
+@admin.register(ChatMessageReaction)
+class ChatMessageReactionAdmin(admin.ModelAdmin):
+    list_display = ("message", "user", "emoji", "created_at")
+    list_filter = ("emoji",)
+
+
+@admin.register(ChatMessageReminder)
+class ChatMessageReminderAdmin(admin.ModelAdmin):
+    list_display = ("message", "task", "created_by", "remind_at", "done_at")
+    list_filter = ("done_at", "remind_at")

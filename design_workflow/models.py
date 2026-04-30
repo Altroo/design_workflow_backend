@@ -148,6 +148,7 @@ class Task(TimestampedModel):
     due_date = models.DateField(null=True, blank=True, db_index=True)
     estimated_minutes = models.PositiveIntegerField(default=0)
     actual_minutes = models.PositiveIntegerField(default=0)
+    work_started_at = models.DateTimeField(null=True, blank=True)
     blocked_reason = models.TextField(blank=True)
     sort_order = models.PositiveIntegerField(default=0)
     labels = models.ManyToManyField(TaskLabel, blank=True, related_name="tasks")
@@ -196,6 +197,13 @@ class Task(TimestampedModel):
 
 class TaskChecklistItem(TimestampedModel):
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="checklist_items")
+    checklist = models.ForeignKey(
+        "TaskChecklist",
+        on_delete=models.CASCADE,
+        related_name="items",
+        null=True,
+        blank=True,
+    )
     title = models.CharField(max_length=255)
     done = models.BooleanField(default=False, db_index=True)
     sort_order = models.PositiveIntegerField(default=0)
@@ -212,6 +220,23 @@ class TaskChecklistItem(TimestampedModel):
         related_name="completed_task_checklist_items",
     )
     completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ("sort_order", "created_at")
+
+    def __str__(self):
+        return self.title
+
+
+class TaskChecklist(TimestampedModel):
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="checklists")
+    title = models.CharField(max_length=255)
+    sort_order = models.PositiveIntegerField(default=0)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="created_task_checklists",
+    )
 
     class Meta:
         ordering = ("sort_order", "created_at")
@@ -384,6 +409,22 @@ class ChatMessage(TimestampedModel):
         related_name="deleted_design_chat_messages",
     )
     deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    edited_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="edited_design_chat_messages",
+    )
+    edited_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    decision_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="decision_design_chat_messages",
+    )
+    decision_at = models.DateTimeField(null=True, blank=True, db_index=True)
 
     class Meta:
         ordering = ("created_at",)
@@ -411,3 +452,68 @@ class ChatMessageAttachment(TimestampedModel):
 
     def __str__(self):
         return self.name
+
+
+class ChatMessageEdit(TimestampedModel):
+    message = models.ForeignKey(ChatMessage, on_delete=models.CASCADE, related_name="edit_history")
+    edited_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="design_chat_message_edits",
+    )
+    previous_body = models.TextField(blank=True)
+    new_body = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+
+    def __str__(self):
+        return f"{self.message_id}:{self.edited_by_id}"
+
+
+class ChatMessageReaction(TimestampedModel):
+    message = models.ForeignKey(ChatMessage, on_delete=models.CASCADE, related_name="reactions")
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="design_chat_reactions",
+    )
+    emoji = models.CharField(max_length=16)
+
+    class Meta:
+        ordering = ("created_at",)
+        constraints = (
+            models.UniqueConstraint(fields=("message", "user", "emoji"), name="unique_design_chat_reaction"),
+        )
+
+    def __str__(self):
+        return f"{self.message_id}:{self.emoji}"
+
+
+class ChatMessageReminder(TimestampedModel):
+    message = models.ForeignKey(ChatMessage, on_delete=models.CASCADE, related_name="reminders")
+    task = models.ForeignKey(
+        Task,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="chat_reminders",
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_design_chat_reminders",
+    )
+    remind_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    note = models.CharField(max_length=255, blank=True)
+    done_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ("remind_at", "created_at")
+
+    def __str__(self):
+        return f"{self.message_id}:{self.remind_at}"

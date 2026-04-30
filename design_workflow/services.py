@@ -1,12 +1,15 @@
+from datetime import timedelta
+
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.contrib.auth import get_user_model
 from django.db.models import Q
 from django.utils import timezone
 
-from .models import Notification, TaskActivity, TaskActivityType, TimeEntry
+from .models import Notification, TaskActivity, TaskActivityType, TaskStatus, TimeEntry
 
 User = get_user_model()
+WORK_DAY_MINUTES = 9 * 60
 
 
 def broadcast_to_users(user_ids: list[int], message: dict) -> None:
@@ -73,6 +76,49 @@ def log_automatic_time_entry(
     )
     broadcast_task_event(task, "time_logged", recipients=related_task_user_ids(task))
     return time_entry
+
+
+def count_business_days(start, end) -> int:
+    start_date = timezone.localtime(start).date()
+    end_date = timezone.localtime(end).date()
+    if end_date < start_date:
+        return 1
+
+    days = 0
+    current = start_date
+    while current <= end_date:
+        if current.weekday() < 5:
+            days += 1
+        current += timedelta(days=1)
+    return max(days, 1)
+
+
+def sync_task_work_session(task, *, user, previous_status: str, next_status: str, event: str):
+    if previous_status == next_status:
+        return None
+
+    if previous_status != TaskStatus.IN_PROGRESS and next_status == TaskStatus.IN_PROGRESS:
+        if task.work_started_at is None:
+            task.work_started_at = timezone.now()
+            task.save(update_fields=["work_started_at", "updated_at"])
+        return None
+
+    if previous_status == TaskStatus.IN_PROGRESS and next_status != TaskStatus.IN_PROGRESS:
+        if task.work_started_at is None:
+            return None
+        closed_at = timezone.now()
+        work_days = count_business_days(task.work_started_at, closed_at)
+        task.work_started_at = None
+        task.save(update_fields=["work_started_at", "updated_at"])
+        return log_automatic_time_entry(
+            task,
+            user=user,
+            minutes=work_days * WORK_DAY_MINUTES,
+            note=f"Automatic workflow entry: {work_days} work day(s) while task was in progress.",
+            event=event,
+        )
+
+    return None
 
 
 def create_notification(
