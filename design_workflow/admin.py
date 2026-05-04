@@ -1,6 +1,7 @@
 from django.contrib import admin
 
 from .models import (
+    AttachmentAnnotation,
     ChatMessage,
     ChatMessageAttachment,
     ChatMessageEdit,
@@ -8,10 +9,13 @@ from .models import (
     ChatMessageReminder,
     ChatThread,
     Notification,
+    NotificationPreference,
     Project,
+    SavedView,
     Task,
     TaskActivity,
     TaskAttachment,
+    TaskArtifactVersion,
     TaskChecklist,
     TaskChecklistItem,
     TaskComment,
@@ -54,9 +58,21 @@ class TaskActivityAdmin(admin.ModelAdmin):
 
 @admin.register(Notification)
 class NotificationAdmin(admin.ModelAdmin):
-    list_display = ("recipient", "type", "task", "read_at", "created_at")
-    list_filter = ("type", "read_at")
+    list_display = ("recipient", "type", "task", "read_at", "snoozed_until", "action_taken_at", "created_at")
+    list_filter = ("type", "read_at", "snoozed_until")
 
+
+@admin.register(NotificationPreference)
+class NotificationPreferenceAdmin(admin.ModelAdmin):
+    list_display = ("user", "mentions", "assignments", "review_requests", "due_soon", "digest_frequency")
+    list_filter = ("digest_frequency", "mentions", "assignments", "review_requests", "due_soon")
+
+
+@admin.register(SavedView)
+class SavedViewAdmin(admin.ModelAdmin):
+    list_display = ("name", "owner", "visibility", "density", "is_default", "updated_at")
+    list_filter = ("visibility", "density", "is_default")
+    search_fields = ("name", "owner__email")
 
 
 
@@ -85,11 +101,25 @@ class TaskAttachmentAdmin(admin.ModelAdmin):
     search_fields = ("name", "task__title")
 
 
+@admin.register(TaskArtifactVersion)
+class TaskArtifactVersionAdmin(admin.ModelAdmin):
+    list_display = ("task", "version_number", "approval_state", "uploaded_by", "approved_by", "created_at")
+    list_filter = ("approval_state",)
+    search_fields = ("task__title", "notes", "attachment__name")
+
+
+@admin.register(AttachmentAnnotation)
+class AttachmentAnnotationAdmin(admin.ModelAdmin):
+    list_display = ("attachment", "author", "x_percent", "y_percent", "resolved", "created_at")
+    list_filter = ("resolved",)
+    search_fields = ("body", "attachment__name", "attachment__task__title")
+
+
 @admin.register(ChatThread)
 class ChatThreadAdmin(admin.ModelAdmin):
-    list_display = ("id", "kind", "title", "updated_at")
+    list_display = ("id", "kind", "title", "project", "task", "updated_at")
     list_filter = ("kind",)
-    search_fields = ("title",)
+    search_fields = ("title", "project__name", "task__title")
 
 
 @admin.register(ChatMessage)

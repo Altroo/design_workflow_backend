@@ -6,7 +6,7 @@ from channels.layers import get_channel_layer
 from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
 from django.db import transaction
-from django.db.models import Q, Sum
+from django.db.models import Max, Q, Sum
 from django.http import Http404
 from django.utils import timezone
 from rest_framework import parsers, permissions, status
@@ -14,6 +14,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import (
+    ArtifactApprovalState,
+    AttachmentAnnotation,
     ChatMessage,
     ChatMessageAttachment,
     ChatMessageEdit,
@@ -22,15 +24,21 @@ from .models import (
     ChatThread,
     ChatThreadKind,
     Notification,
+    NotificationPreference,
     NotificationType,
     Project,
     ProjectStatus,
+    SavedView,
+    SavedViewVisibility,
     Task,
     TaskActivityType,
     TaskAttachment,
+    TaskArtifactVersion,
     TaskChecklist,
     TaskChecklistItem,
+    TaskComment,
     TaskLabel,
+    TaskReviewState,
     TaskStatus,
     TimeEntry,
 )
@@ -49,11 +57,17 @@ from .serializers import (
     ChecklistCreateSerializer,
     CommentCreateSerializer,
     DashboardSummarySerializer,
+    AttachmentAnnotationSerializer,
     NotificationItemSerializer,
+    NotificationActionSerializer,
+    NotificationPreferenceSerializer,
+    NotificationSnoozeSerializer,
     ProjectDetailSerializer,
     ProjectSummarySerializer,
     ProjectWriteSerializer,
+    SavedViewSerializer,
     TaskArchiveSerializer,
+    TaskArtifactVersionSerializer,
     TaskCompletionSerializer,
     TaskAttachmentSerializer,
     TaskCardSerializer,
@@ -63,6 +77,7 @@ from .serializers import (
     TaskLabelSerializer,
     TaskReassignSerializer,
     TaskReorderSerializer,
+    TaskReviewUpdateSerializer,
     TaskStatusUpdateSerializer,
     TaskWriteSerializer,
     TimeEntryCreateSerializer,
@@ -70,9 +85,12 @@ from .serializers import (
     TimeReportRowSerializer,
     UserSummarySerializer,
     WorkloadRowSerializer,
+    WorkflowAnalyticsSerializer,
+    WorkspaceSearchResultSerializer,
     TaskCommentSerializer,
 )
 from .services import (
+    WORK_DAY_MINUTES,
     broadcast_task_event,
     create_notification,
     mark_notification_read,
@@ -94,9 +112,37 @@ def parse_bool(value: str | None) -> bool | None:
     return None
 
 
+def average(values: list[float]) -> float:
+    if not values:
+        return 0
+    return round(sum(values) / len(values), 1)
+
+
+def days_between(start, end) -> float:
+    if not start or not end or end < start:
+        return 0
+    return round((end - start).total_seconds() / 86400, 1)
+
+
+def first_status_time(task: Task, target_status: str):
+    for activity in task.activities.all().order_by("created_at"):
+        metadata = activity.metadata or {}
+        if metadata.get("status") == target_status or metadata.get("next") == target_status:
+            return activity.created_at
+    return None
+
+
 def get_task_queryset():
     return (
-        Task.objects.select_related("project", "project__manager", "current_assignee")
+        Task.objects.select_related(
+            "project",
+            "project__manager",
+            "current_assignee",
+            "review_requested_by",
+            "review_approved_by",
+            "source_chat_message",
+            "source_chat_message__thread",
+        )
         .prefetch_related(
             "labels",
             "checklists__created_by",
@@ -105,6 +151,10 @@ def get_task_queryset():
             "checklist_items__created_by",
             "checklist_items__completed_by",
             "attachments__uploaded_by",
+            "attachments__annotations",
+            "artifact_versions__uploaded_by",
+            "artifact_versions__approved_by",
+            "artifact_versions__attachment",
         )
         .all()
     )
@@ -112,7 +162,15 @@ def get_task_queryset():
 
 def get_task_detail_queryset():
     return (
-        Task.objects.select_related("project", "project__manager", "current_assignee")
+        Task.objects.select_related(
+            "project",
+            "project__manager",
+            "current_assignee",
+            "review_requested_by",
+            "review_approved_by",
+            "source_chat_message",
+            "source_chat_message__thread",
+        )
         .prefetch_related(
             "labels",
             "checklists__created_by",
@@ -121,6 +179,11 @@ def get_task_detail_queryset():
             "checklist_items__created_by",
             "checklist_items__completed_by",
             "attachments__uploaded_by",
+            "attachments__annotations",
+            "artifact_versions__uploaded_by",
+            "artifact_versions__approved_by",
+            "artifact_versions__attachment__uploaded_by",
+            "artifact_versions__attachment__annotations",
             "comments__author",
             "time_entries__user",
             "activities__actor",
@@ -140,6 +203,21 @@ def apply_task_filters(queryset, params, user):
         queryset = queryset.filter(status=params.get("status"))
     if params.get("priority"):
         queryset = queryset.filter(priority=params.get("priority"))
+    if params.get("review_state"):
+        queryset = queryset.filter(review_state=params.get("review_state"))
+    if params.get("label"):
+        queryset = queryset.filter(labels__id=params.get("label"))
+    query = (params.get("q") or "").strip()
+    if query:
+        queryset = queryset.filter(
+            Q(title__icontains=query)
+            | Q(description__icontains=query)
+            | Q(project__name__icontains=query)
+            | Q(current_assignee__first_name__icontains=query)
+            | Q(current_assignee__last_name__icontains=query)
+            | Q(current_assignee__email__icontains=query)
+            | Q(labels__name__icontains=query)
+        ).distinct()
     if parse_bool(params.get("overdue")) is True:
         queryset = queryset.filter(due_date__lt=timezone.localdate()).exclude(status=TaskStatus.DONE)
     if parse_bool(params.get("blocked")) is True:
@@ -153,6 +231,124 @@ def apply_task_filters(queryset, params, user):
     return queryset
 
 
+def apply_task_sorting(queryset, params):
+    sort = params.get("sort")
+    sort_map = {
+        "due_date": ("due_date", "sort_order", "-created_at"),
+        "-due_date": ("-due_date", "sort_order", "-created_at"),
+        "priority": ("priority", "sort_order", "-created_at"),
+        "-priority": ("-priority", "sort_order", "-created_at"),
+        "title": ("title",),
+        "-title": ("-title",),
+        "updated_at": ("updated_at",),
+        "-updated_at": ("-updated_at",),
+        "sort_order": ("project_id", "sort_order", "-created_at"),
+    }
+    if sort in sort_map:
+        return queryset.order_by(*sort_map[sort])
+    return queryset
+
+
+def is_manager_user(user) -> bool:
+    return bool(user and user.is_authenticated and (user.role == "manager" or user.is_staff or getattr(user, "is_superuser", False)))
+
+
+def user_can_access_project_context(user, project: Project) -> bool:
+    if not user or not user.is_authenticated or not project:
+        return False
+    if is_manager_user(user) or project.manager_id == user.id:
+        return True
+    return Task.objects.filter(project=project, current_assignee=user).exists()
+
+
+def user_can_access_task_context(user, task: Task) -> bool:
+    if not user or not user.is_authenticated or not task:
+        return False
+    return bool(
+        is_manager_user(user)
+        or task.current_assignee_id == user.id
+        or task.project.manager_id == user.id
+    )
+
+
+def get_chat_thread_base_queryset():
+    return ChatThread.objects.select_related(
+        "project",
+        "project__manager",
+        "task",
+        "task__project",
+        "task__project__manager",
+        "task__current_assignee",
+    ).prefetch_related(
+        "participants",
+        "messages__sender",
+        "messages__attachments",
+        "messages__read_by",
+        "messages__mentions",
+        "messages__reply_to__sender",
+    )
+
+
+def get_chat_thread_queryset_for_user(user):
+    queryset = get_chat_thread_base_queryset()
+    access_filter = Q(kind=ChatThreadKind.PUBLIC) | Q(participants=user)
+    if is_manager_user(user):
+        access_filter |= Q(kind__in=(ChatThreadKind.PROJECT, ChatThreadKind.TASK))
+    else:
+        assigned_project_ids = Task.objects.filter(current_assignee=user).values("project_id")
+        access_filter |= (
+            Q(kind=ChatThreadKind.PROJECT, project__manager=user)
+            | Q(kind=ChatThreadKind.PROJECT, project_id__in=assigned_project_ids)
+            | Q(kind=ChatThreadKind.TASK, task__current_assignee=user)
+            | Q(kind=ChatThreadKind.TASK, task__project__manager=user)
+        )
+    return queryset.filter(access_filter).distinct()
+
+
+def can_access_chat_thread(user, thread: ChatThread) -> bool:
+    if thread.kind == ChatThreadKind.PUBLIC:
+        return True
+    if thread.kind == ChatThreadKind.PRIVATE:
+        return thread.participants.filter(id=user.id).exists()
+    if thread.kind == ChatThreadKind.PROJECT and thread.project_id:
+        return user_can_access_project_context(user, thread.project)
+    if thread.kind == ChatThreadKind.TASK and thread.task_id:
+        return user_can_access_task_context(user, thread.task)
+    return False
+
+
+def linked_thread_user_ids(thread: ChatThread) -> set[int]:
+    ids = set(thread.participants.values_list("id", flat=True))
+    if thread.kind == ChatThreadKind.PROJECT and thread.project_id:
+        ids.add(thread.project.manager_id)
+        ids.update(
+            Task.objects.filter(project=thread.project, current_assignee_id__isnull=False)
+            .values_list("current_assignee_id", flat=True)
+        )
+    if thread.kind == ChatThreadKind.TASK and thread.task_id:
+        ids.update(related_task_user_ids(thread.task))
+    return {user_id for user_id in ids if user_id}
+
+
+def sync_linked_thread_participants(thread: ChatThread, actor=None) -> ChatThread:
+    ids = linked_thread_user_ids(thread)
+    if actor and getattr(actor, "id", None):
+        ids.add(actor.id)
+    if ids:
+        thread.participants.add(*ids)
+    return thread
+
+
+def chat_thread_recipients(thread: ChatThread, sender):
+    if thread.kind == ChatThreadKind.PUBLIC:
+        return User.objects.none()
+    sync_linked_thread_participants(thread)
+    recipient_ids = linked_thread_user_ids(thread)
+    if sender and getattr(sender, "id", None):
+        recipient_ids.discard(sender.id)
+    return User.objects.filter(id__in=recipient_ids, is_active=True)
+
+
 def get_task_or_404(pk: int) -> Task:
     try:
         return get_task_detail_queryset().get(pk=pk)
@@ -162,20 +358,10 @@ def get_task_or_404(pk: int) -> Task:
 
 def get_thread_or_404(request, pk: int) -> ChatThread:
     try:
-        thread = (
-            ChatThread.objects.prefetch_related(
-                "participants",
-                "messages__sender",
-                "messages__attachments",
-                "messages__read_by",
-                "messages__mentions",
-                "messages__reply_to__sender",
-            )
-            .get(pk=pk)
-        )
+        thread = get_chat_thread_base_queryset().get(pk=pk)
     except ChatThread.DoesNotExist as exc:
         raise Http404 from exc
-    if thread.kind == ChatThreadKind.PRIVATE and not thread.participants.filter(id=request.user.id).exists():
+    if not can_access_chat_thread(request.user, thread):
         raise Http404
     return thread
 
@@ -206,7 +392,7 @@ def get_chat_message_or_404(request, pk: int) -> ChatMessage:
         message = get_chat_message_queryset().get(pk=pk)
     except ChatMessage.DoesNotExist as exc:
         raise Http404 from exc
-    if message.thread.kind == ChatThreadKind.PRIVATE and not message.thread.participants.filter(id=request.user.id).exists():
+    if not can_access_chat_thread(request.user, message.thread):
         raise Http404
     return message
 
@@ -236,7 +422,7 @@ def extract_chat_mentions(body: str, thread: ChatThread, sender) -> list:
     tokens = {match.lower() for match in re.findall(r"@([\w.\-]+)", body)}
     if not tokens:
         return []
-    participants = thread.participants.exclude(id=sender.id) if thread.kind == ChatThreadKind.PRIVATE else User.objects.filter(is_active=True).exclude(id=sender.id)
+    participants = thread.participants.exclude(id=sender.id) if thread.kind != ChatThreadKind.PUBLIC else User.objects.filter(is_active=True).exclude(id=sender.id)
     matched = []
     for user in participants:
         candidates = {
@@ -249,6 +435,194 @@ def extract_chat_mentions(body: str, thread: ChatThread, sender) -> list:
         if tokens & {candidate for candidate in candidates if candidate}:
             matched.append(user)
     return matched
+
+
+class SavedViewListCreateView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get(self, request):
+        queryset = SavedView.objects.select_related("owner").filter(
+            Q(owner=request.user) | Q(visibility=SavedViewVisibility.TEAM)
+        )
+        visibility = request.query_params.get("visibility")
+        if visibility:
+            queryset = queryset.filter(visibility=visibility)
+        return Response(SavedViewSerializer(queryset, many=True, context={"request": request}).data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        serializer = SavedViewSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        with transaction.atomic():
+            if serializer.validated_data.get("is_default"):
+                SavedView.objects.filter(owner=request.user, is_default=True).update(is_default=False)
+            view = serializer.save(owner=request.user)
+        return Response(SavedViewSerializer(view, context={"request": request}).data, status=status.HTTP_201_CREATED)
+
+
+class SavedViewDetailView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    @staticmethod
+    def get_object(request, pk: int) -> SavedView:
+        try:
+            view = SavedView.objects.select_related("owner").get(pk=pk)
+        except SavedView.DoesNotExist as exc:
+            raise Http404 from exc
+        if view.owner_id == request.user.id:
+            return view
+        if view.visibility == SavedViewVisibility.TEAM and is_manager_user(request.user):
+            return view
+        raise Http404
+
+    def patch(self, request, pk: int):
+        view = self.get_object(request, pk)
+        if view.owner_id != request.user.id and not is_manager_user(request.user):
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        serializer = SavedViewSerializer(view, data=request.data, partial=True, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        with transaction.atomic():
+            if serializer.validated_data.get("is_default"):
+                SavedView.objects.filter(owner=view.owner, is_default=True).exclude(pk=view.pk).update(is_default=False)
+            view = serializer.save()
+        return Response(SavedViewSerializer(view, context={"request": request}).data, status=status.HTTP_200_OK)
+
+    def delete(self, request, pk: int):
+        view = self.get_object(request, pk)
+        if view.owner_id != request.user.id and not is_manager_user(request.user):
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        view.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class WorkspaceSearchView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get(self, request):
+        query = (request.query_params.get("q") or "").strip()
+        if not query:
+            return Response([], status=status.HTTP_200_OK)
+        requested_types = {
+            item.strip()
+            for item in (request.query_params.get("types") or "task,project,user,chat,file").split(",")
+            if item.strip()
+        }
+        results = []
+
+        if "task" in requested_types:
+            task_queryset = apply_task_filters(get_task_queryset(), request.query_params, request.user).filter(
+                Q(title__icontains=query)
+                | Q(description__icontains=query)
+                | Q(project__name__icontains=query)
+                | Q(labels__name__icontains=query)
+            ).distinct()[:10]
+            results.extend(
+                {
+                    "type": "task",
+                    "id": task.id,
+                    "title": task.title,
+                    "subtitle": task.project.name,
+                    "url": f"/dashboard/tasks/{task.id}",
+                    "metadata": {
+                        "status": task.status,
+                        "priority": task.priority,
+                        "review_state": task.review_state,
+                        "due_date": task.due_date.isoformat() if task.due_date else None,
+                    },
+                }
+                for task in task_queryset
+            )
+
+        if "project" in requested_types:
+            project_queryset = Project.objects.select_related("manager").filter(
+                Q(name__icontains=query) | Q(description__icontains=query)
+            )[:10]
+            results.extend(
+                {
+                    "type": "project",
+                    "id": project.id,
+                    "title": project.name,
+                    "subtitle": project.manager.email,
+                    "url": f"/dashboard/projects/{project.id}",
+                    "metadata": {"status": project.status, "priority": project.priority},
+                }
+                for project in project_queryset
+            )
+
+        if "user" in requested_types and is_manager_user(request.user):
+            user_queryset = User.objects.filter(
+                Q(first_name__icontains=query)
+                | Q(last_name__icontains=query)
+                | Q(email__icontains=query),
+                is_active=True,
+            )[:10]
+            results.extend(
+                {
+                    "type": "user",
+                    "id": user.id,
+                    "title": f"{user.first_name} {user.last_name}".strip() or user.email,
+                    "subtitle": user.email,
+                    "url": f"/dashboard/users/{user.id}",
+                    "metadata": {"role": user.role},
+                }
+                for user in user_queryset
+            )
+
+        if "chat" in requested_types:
+            accessible_thread_ids = get_chat_thread_queryset_for_user(request.user).values("id")
+            chat_queryset = get_chat_message_queryset().filter(
+                thread_id__in=accessible_thread_ids,
+                deleted_at__isnull=True,
+            ).filter(
+                Q(body__icontains=query)
+                | Q(sender__first_name__icontains=query)
+                | Q(sender__last_name__icontains=query)
+                | Q(sender__email__icontains=query)
+            ).distinct().order_by("-created_at")[:10]
+            results.extend(
+                {
+                    "type": "chat",
+                    "id": message.id,
+                    "title": message.body[:120],
+                    "subtitle": message.thread.title or message.thread.kind,
+                    "url": f"/dashboard/chat?thread={message.thread_id}&message={message.id}",
+                    "metadata": {"thread_id": message.thread_id, "sender_id": message.sender_id},
+                }
+                for message in chat_queryset
+            )
+
+        if "file" in requested_types:
+            accessible_thread_ids = get_chat_thread_queryset_for_user(request.user).values("id")
+            task_files = TaskAttachment.objects.select_related("task", "task__project", "uploaded_by").filter(
+                Q(name__icontains=query) | Q(task__title__icontains=query) | Q(task__project__name__icontains=query)
+            )[:10]
+            results.extend(
+                {
+                    "type": "file",
+                    "id": attachment.id,
+                    "title": attachment.name,
+                    "subtitle": attachment.task.title,
+                    "url": f"/dashboard/tasks/{attachment.task_id}",
+                    "metadata": {"task_id": attachment.task_id, "project_id": attachment.task.project_id, "mime_type": attachment.mime_type},
+                }
+                for attachment in task_files
+            )
+            chat_files = ChatMessageAttachment.objects.select_related("message", "message__thread").filter(
+                message__thread_id__in=accessible_thread_ids,
+                name__icontains=query,
+            ).distinct()[:10]
+            results.extend(
+                {
+                    "type": "file",
+                    "id": attachment.id,
+                    "title": attachment.name,
+                    "subtitle": attachment.message.thread.title or attachment.message.thread.kind,
+                    "url": f"/dashboard/chat?thread={attachment.message.thread_id}&message={attachment.message_id}",
+                    "metadata": {"thread_id": attachment.message.thread_id, "message_id": attachment.message_id, "mime_type": attachment.mime_type},
+                }
+                for attachment in chat_files
+            )
+
+        return Response(WorkspaceSearchResultSerializer(results[:40], many=True).data, status=status.HTTP_200_OK)
 
 
 class DashboardSummaryView(APIView):
@@ -330,7 +704,7 @@ class TaskListCreateView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def get(self, request):
-        queryset = apply_task_filters(get_task_queryset(), request.query_params, request.user)
+        queryset = apply_task_sorting(apply_task_filters(get_task_queryset(), request.query_params, request.user), request.query_params)
         return Response(TaskCardSerializer(queryset, many=True, context={"request": request}).data, status=status.HTTP_200_OK)
 
     def post(self, request):
@@ -340,8 +714,17 @@ class TaskListCreateView(APIView):
             data.pop("estimated_minutes", None)
         serializer = TaskWriteSerializer(data=data)
         serializer.is_valid(raise_exception=True)
+        source_message = serializer.validated_data.get("source_chat_message")
+        if source_message and (source_message.deleted_at or not can_access_chat_thread(request.user, source_message.thread)):
+            return Response({"source_chat_message_id": ["Source message is not available."]}, status=status.HTTP_400_BAD_REQUEST)
         task = serializer.save(created_by=request.user, updated_by=request.user)
-        record_task_activity(task, request.user, TaskActivityType.CREATED, {"status": task.status, "assignee_id": task.current_assignee_id})
+        activity_metadata = {"status": task.status, "assignee_id": task.current_assignee_id}
+        if task.source_chat_message_id:
+            activity_metadata |= {
+                "source_chat_message_id": task.source_chat_message_id,
+                "source_chat_thread_id": task.source_chat_message.thread_id,
+            }
+        record_task_activity(task, request.user, TaskActivityType.CREATED, activity_metadata)
         if task.current_assignee_id:
             create_notification(
                 recipient=task.current_assignee,
@@ -373,6 +756,9 @@ class TaskDetailView(APIView):
         }
         serializer = TaskWriteSerializer(task, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
+        source_message = serializer.validated_data.get("source_chat_message")
+        if source_message and (source_message.deleted_at or not can_access_chat_thread(request.user, source_message.thread)):
+            return Response({"source_chat_message_id": ["Source message is not available."]}, status=status.HTTP_400_BAD_REQUEST)
         task = serializer.save(updated_by=request.user)
         if previous["status"] != task.status:
             record_task_activity(task, request.user, TaskActivityType.STATUS_CHANGED, previous | {"next": task.status})
@@ -761,6 +1147,137 @@ class TaskAttachmentDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+class TaskReviewView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def post(self, request, pk: int):
+        task = get_task_or_404(pk)
+        if not can_mutate_task(request.user, task):
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        serializer = TaskReviewUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        previous_state = task.review_state
+        next_state = serializer.validated_data["review_state"]
+        task.review_state = next_state
+        update_fields = ["review_state", "updated_by", "updated_at"]
+        task.updated_by = request.user
+        if next_state == "needs_review":
+            task.review_requested_by = request.user
+            task.review_requested_at = timezone.now()
+            task.review_approved_by = None
+            task.review_approved_at = None
+            update_fields.extend(["review_requested_by", "review_requested_at", "review_approved_by", "review_approved_at"])
+        elif next_state == "approved":
+            task.review_approved_by = request.user
+            task.review_approved_at = timezone.now()
+            update_fields.extend(["review_approved_by", "review_approved_at"])
+        elif next_state == "not_submitted":
+            task.review_requested_by = None
+            task.review_requested_at = None
+            task.review_approved_by = None
+            task.review_approved_at = None
+            update_fields.extend(["review_requested_by", "review_requested_at", "review_approved_by", "review_approved_at"])
+        elif next_state == "changes_requested":
+            task.review_approved_by = None
+            task.review_approved_at = None
+            update_fields.extend(["review_approved_by", "review_approved_at"])
+        task.save(update_fields=update_fields)
+        notes = serializer.validated_data.get("notes", "")
+        record_task_activity(
+            task,
+            request.user,
+            TaskActivityType.REVIEW_UPDATED,
+            {"previous_state": previous_state, "review_state": next_state, "notes": notes},
+        )
+        recipients = set(related_task_user_ids(task))
+        if next_state == "needs_review":
+            recipients.add(task.project.manager_id)
+        for recipient in User.objects.filter(id__in=[user_id for user_id in recipients if user_id != request.user.id]):
+            create_notification(
+                recipient=recipient,
+                notification_type=NotificationType.REVIEW_REQUESTED,
+                task=task,
+                project=task.project,
+                payload={"review_state": next_state, "notes": notes},
+            )
+        broadcast_task_event(task, "review_updated", recipients=list(recipients))
+        return Response(TaskDetailSerializer(get_task_detail_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_200_OK)
+
+
+class TaskArtifactVersionListView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get(self, request, pk: int):
+        task = get_task_or_404(pk)
+        versions = task.artifact_versions.select_related("uploaded_by", "approved_by", "attachment__uploaded_by").prefetch_related("attachment__annotations")
+        return Response(TaskArtifactVersionSerializer(versions, many=True, context={"request": request}).data, status=status.HTTP_200_OK)
+
+    def post(self, request, pk: int):
+        task = get_task_or_404(pk)
+        if not can_mutate_task(request.user, task):
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        serializer = TaskArtifactVersionSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        attachment = serializer.validated_data.get("attachment")
+        if attachment and attachment.task_id != task.id:
+            return Response({"attachment_id": ["Attachment must belong to this task."]}, status=status.HTTP_400_BAD_REQUEST)
+        next_version = int(task.artifact_versions.aggregate(value=Max("version_number"))["value"] or 0) + 1
+        version = serializer.save(task=task, version_number=next_version, uploaded_by=request.user)
+        update_fields = []
+        if version.approval_state == ArtifactApprovalState.APPROVED:
+            version.approved_by = request.user
+            version.approved_at = timezone.now()
+            update_fields = ["approved_by", "approved_at", "updated_at"]
+            version.save(update_fields=update_fields)
+        record_task_activity(
+            task,
+            request.user,
+            TaskActivityType.ARTIFACT_VERSION_ADDED,
+            {"version_id": version.id, "version_number": version.version_number, "approval_state": version.approval_state},
+        )
+        broadcast_task_event(task, "artifact_version_added", recipients=related_task_user_ids(task))
+        return Response(TaskArtifactVersionSerializer(version, context={"request": request}).data, status=status.HTTP_201_CREATED)
+
+
+class AttachmentAnnotationListView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    @staticmethod
+    def get_attachment(pk: int) -> TaskAttachment:
+        try:
+            return TaskAttachment.objects.select_related("task", "task__project").get(pk=pk)
+        except TaskAttachment.DoesNotExist as exc:
+            raise Http404 from exc
+
+    def get(self, request, pk: int):
+        attachment = self.get_attachment(pk)
+        annotations = attachment.annotations.select_related("author", "resolved_by", "version")
+        return Response(AttachmentAnnotationSerializer(annotations, many=True).data, status=status.HTTP_200_OK)
+
+    def post(self, request, pk: int):
+        attachment = self.get_attachment(pk)
+        if not can_mutate_task(request.user, attachment.task):
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        serializer = AttachmentAnnotationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        version = serializer.validated_data.get("version")
+        if version and (version.task_id != attachment.task_id or version.attachment_id not in {None, attachment.id}):
+            return Response({"version_id": ["Version must belong to this attachment or task."]}, status=status.HTTP_400_BAD_REQUEST)
+        annotation = serializer.save(attachment=attachment, author=request.user)
+        if annotation.resolved:
+            annotation.resolved_by = request.user
+            annotation.resolved_at = timezone.now()
+            annotation.save(update_fields=["resolved_by", "resolved_at", "updated_at"])
+        record_task_activity(
+            attachment.task,
+            request.user,
+            TaskActivityType.ANNOTATION_ADDED,
+            {"annotation_id": annotation.id, "attachment_id": attachment.id, "version_id": version.id if version else None},
+        )
+        broadcast_task_event(attachment.task, "annotation_added", recipients=related_task_user_ids(attachment.task))
+        return Response(AttachmentAnnotationSerializer(annotation).data, status=status.HTTP_201_CREATED)
+
+
 class TaskReassignView(APIView):
     permission_classes = (IsManager,)
 
@@ -858,6 +1375,113 @@ class TimeReportView(APIView):
         return Response(TimeReportRowSerializer(rows, many=True).data, status=status.HTTP_200_OK)
 
 
+class WorkflowAnalyticsReportView(APIView):
+    permission_classes = (IsManager,)
+
+    def get(self, request):
+        queryset = Task.objects.select_related(
+            "project",
+            "project__manager",
+            "current_assignee",
+        ).prefetch_related(
+            "activities",
+            "time_entries",
+        ).filter(archived=False)
+        if request.query_params.get("start_date"):
+            queryset = queryset.filter(created_at__date__gte=request.query_params.get("start_date"))
+        if request.query_params.get("end_date"):
+            queryset = queryset.filter(created_at__date__lte=request.query_params.get("end_date"))
+
+        tasks = list(queryset)
+        now = timezone.now()
+        lead_times = []
+        cycle_times = []
+        blocked_minutes = 0
+        status_counts = {status_value: 0 for status_value, _label in TaskStatus.choices}
+
+        for task in tasks:
+            status_counts[task.status] = status_counts.get(task.status, 0) + 1
+            completed_at = task.completed_at
+            if not completed_at and task.status == TaskStatus.DONE:
+                completed_at = task.updated_at
+            if completed_at:
+                lead_times.append(days_between(task.created_at, completed_at))
+                cycle_started_at = first_status_time(task, TaskStatus.IN_PROGRESS) or task.work_started_at or task.created_at
+                cycle_times.append(days_between(cycle_started_at, completed_at))
+            if task.status == TaskStatus.BLOCKED:
+                blocked_started_at = first_status_time(task, TaskStatus.BLOCKED) or task.updated_at or task.created_at
+                blocked_minutes += max(0, int((now - blocked_started_at).total_seconds() // 60))
+
+        unresolved_reviews = [
+            task for task in tasks
+            if task.review_state in {TaskReviewState.NEEDS_REVIEW, TaskReviewState.CHANGES_REQUESTED}
+        ]
+        pending_review_minutes = [
+            max(0, int((now - task.review_requested_at).total_seconds() // 60))
+            for task in unresolved_reviews
+            if task.review_requested_at
+        ]
+        total_estimated = sum(task.estimated_minutes for task in tasks)
+        total_actual = sum(task.actual_minutes for task in tasks)
+        remaining_by_user: dict[int, dict] = {}
+        for task in tasks:
+            if not task.current_assignee_id or task.status == TaskStatus.DONE:
+                continue
+            remaining = max(task.estimated_minutes - task.actual_minutes, 0) or task.estimated_minutes
+            row = remaining_by_user.setdefault(
+                task.current_assignee_id,
+                {
+                    "user": UserSummarySerializer(task.current_assignee).data,
+                    "open_tasks": 0,
+                    "overdue_tasks": 0,
+                    "remaining_minutes": 0,
+                    "capacity_minutes": WORK_DAY_MINUTES * 5,
+                },
+            )
+            row["open_tasks"] += 1
+            row["remaining_minutes"] += remaining
+            if task.is_overdue:
+                row["overdue_tasks"] += 1
+
+        capacity = []
+        today = timezone.localdate()
+        for row in remaining_by_user.values():
+            load_percent = round((row["remaining_minutes"] / row["capacity_minutes"]) * 100, 1) if row["capacity_minutes"] else 0
+            forecast_days = round(row["remaining_minutes"] / WORK_DAY_MINUTES, 1) if row["remaining_minutes"] else 0
+            capacity.append(row | {
+                "load_percent": load_percent,
+                "forecast_days": forecast_days,
+                "risk": "high" if load_percent >= 100 or row["overdue_tasks"] else "medium" if load_percent >= 75 else "normal",
+            })
+
+        forecast = sorted(capacity, key=lambda row: (-row["load_percent"], -row["overdue_tasks"], row["user"]["email"]))
+        payload = {
+            "generated_at": now,
+            "tasks_sampled": len(tasks),
+            "lead_time_days": average(lead_times),
+            "cycle_time_days": average(cycle_times),
+            "blocked_tasks": status_counts.get(TaskStatus.BLOCKED, 0),
+            "blocked_time_minutes": blocked_minutes,
+            "review_bottlenecks": {
+                "needs_review": sum(1 for task in tasks if task.review_state == TaskReviewState.NEEDS_REVIEW),
+                "changes_requested": sum(1 for task in tasks if task.review_state == TaskReviewState.CHANGES_REQUESTED),
+                "approved": sum(1 for task in tasks if task.review_state == TaskReviewState.APPROVED),
+                "pending_review_minutes": sum(pending_review_minutes),
+                "average_pending_review_minutes": int(sum(pending_review_minutes) / len(pending_review_minutes)) if pending_review_minutes else 0,
+            },
+            "estimate_vs_actual": {
+                "estimated_minutes": total_estimated,
+                "actual_minutes": total_actual,
+                "variance_minutes": total_actual - total_estimated,
+                "actual_to_estimate_ratio": round(total_actual / total_estimated, 2) if total_estimated else 0,
+            },
+            "capacity": sorted(capacity, key=lambda row: row["user"]["email"]),
+            "designer_forecast": forecast[:8],
+            "status_counts": status_counts,
+        }
+        return Response(WorkflowAnalyticsSerializer(payload).data, status=status.HTTP_200_OK)
+
+
 class NotificationListView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
@@ -880,23 +1504,98 @@ class NotificationReadView(APIView):
         return Response(NotificationItemSerializer(notification, context={"request": request}).data, status=status.HTTP_200_OK)
 
 
+class NotificationSnoozeView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def post(self, request, pk: int):
+        try:
+            notification = Notification.objects.get(pk=pk, recipient=request.user)
+        except Notification.DoesNotExist as exc:
+            raise Http404 from exc
+        serializer = NotificationSnoozeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        notification.snoozed_until = serializer.validated_data["snoozed_until"]
+        notification.save(update_fields=["snoozed_until"])
+        return Response(NotificationItemSerializer(notification, context={"request": request}).data, status=status.HTTP_200_OK)
+
+
+class NotificationActionView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def post(self, request, pk: int):
+        try:
+            notification = Notification.objects.select_related("task", "task__project", "project").get(pk=pk, recipient=request.user)
+        except Notification.DoesNotExist as exc:
+            raise Http404 from exc
+        serializer = NotificationActionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        action = serializer.validated_data["action"]
+        task = notification.task
+
+        if action == "mark_read":
+            mark_notification_read(notification)
+        elif action == "accept_assignment":
+            if not task:
+                return Response({"task": ["This notification is not linked to a task."]}, status=status.HTTP_400_BAD_REQUEST)
+            if task.current_assignee_id not in {None, request.user.id} and not is_manager_user(request.user):
+                return Response(status=status.HTTP_403_FORBIDDEN)
+            if task.current_assignee_id is None:
+                task.current_assignee = request.user
+                task.updated_by = request.user
+                task.save(update_fields=["current_assignee", "updated_by", "updated_at"])
+                record_task_activity(task, request.user, TaskActivityType.REASSIGNED, {"assignee_id": request.user.id, "source": "notification_action"})
+                broadcast_task_event(task, "reassigned", recipients=related_task_user_ids(task))
+            mark_notification_read(notification)
+        elif action == "move_status":
+            if not task:
+                return Response({"task": ["This notification is not linked to a task."]}, status=status.HTTP_400_BAD_REQUEST)
+            if not can_mutate_task(request.user, task):
+                return Response(status=status.HTTP_403_FORBIDDEN)
+            previous_status = task.status
+            task.status = serializer.validated_data["status"]
+            task.updated_by = request.user
+            task.save(update_fields=["status", "updated_by", "updated_at"])
+            record_task_activity(task, request.user, TaskActivityType.STATUS_CHANGED, {"previous_status": previous_status, "status": task.status, "source": "notification_action"})
+            sync_task_work_session(task, user=request.user, previous_status=previous_status, next_status=task.status, event="notification_action")
+            broadcast_task_event(task, "status_changed", recipients=related_task_user_ids(task))
+            mark_notification_read(notification)
+        elif action == "comment":
+            if not task:
+                return Response({"task": ["This notification is not linked to a task."]}, status=status.HTTP_400_BAD_REQUEST)
+            if not can_mutate_task(request.user, task):
+                return Response(status=status.HTTP_403_FORBIDDEN)
+            comment = TaskComment.objects.create(task=task, author=request.user, body=serializer.validated_data["body"])
+            record_task_activity(task, request.user, TaskActivityType.COMMENT_ADDED, {"comment_id": comment.id, "source": "notification_action"})
+            broadcast_task_event(task, "comment_added", recipients=related_task_user_ids(task))
+            mark_notification_read(notification)
+
+        notification.action_taken_at = timezone.now()
+        notification.action_taken_by = request.user
+        notification.save(update_fields=["action_taken_at", "action_taken_by"])
+        return Response(NotificationItemSerializer(notification, context={"request": request}).data, status=status.HTTP_200_OK)
+
+
+class NotificationPreferenceView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get(self, request):
+        preferences, _ = NotificationPreference.objects.get_or_create(user=request.user)
+        return Response(NotificationPreferenceSerializer(preferences).data, status=status.HTTP_200_OK)
+
+    def patch(self, request):
+        preferences, _ = NotificationPreference.objects.get_or_create(user=request.user)
+        serializer = NotificationPreferenceSerializer(preferences, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(NotificationPreferenceSerializer(preferences).data, status=status.HTTP_200_OK)
+
+
 class ChatThreadListView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def get(self, request):
         public, _ = ChatThread.objects.get_or_create(kind=ChatThreadKind.PUBLIC, defaults={"title": "Studio public"})
-        queryset = (
-            ChatThread.objects.prefetch_related(
-                "participants",
-                "messages__sender",
-                "messages__attachments",
-                "messages__read_by",
-                "messages__mentions",
-                "messages__reply_to__sender",
-            )
-            .filter(Q(kind=ChatThreadKind.PUBLIC) | Q(participants=request.user))
-            .distinct()
-        )
+        queryset = get_chat_thread_queryset_for_user(request.user)
         if not queryset.filter(pk=public.pk).exists():
             queryset = ChatThread.objects.filter(pk=public.pk) | queryset
         return Response(ChatThreadSerializer(queryset, many=True, context={"request": request}).data, status=status.HTTP_200_OK)
@@ -911,6 +1610,53 @@ class ChatThreadListView(APIView):
                 defaults={"title": serializer.validated_data.get("title") or "Studio public"},
             )
             return Response(ChatThreadSerializer(thread, context={"request": request}).data, status=status.HTTP_200_OK)
+        if kind == ChatThreadKind.PROJECT:
+            project = serializer.validated_data.get("project")
+            if not project:
+                return Response({"project_id": ["This field is required for project threads."]}, status=status.HTTP_400_BAD_REQUEST)
+            if not user_can_access_project_context(request.user, project):
+                return Response(status=status.HTTP_403_FORBIDDEN)
+            thread, created = ChatThread.objects.get_or_create(
+                kind=ChatThreadKind.PROJECT,
+                project=project,
+                defaults={"title": serializer.validated_data.get("title") or project.name},
+            )
+            if not thread.title:
+                thread.title = project.name
+                thread.save(update_fields=["title", "updated_at"])
+            sync_linked_thread_participants(thread, actor=request.user)
+            return Response(
+                ChatThreadSerializer(thread, context={"request": request}).data,
+                status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+            )
+        if kind == ChatThreadKind.TASK:
+            task = serializer.validated_data.get("task")
+            if not task:
+                return Response({"task_id": ["This field is required for task threads."]}, status=status.HTTP_400_BAD_REQUEST)
+            if not user_can_access_task_context(request.user, task):
+                return Response(status=status.HTTP_403_FORBIDDEN)
+            thread, created = ChatThread.objects.get_or_create(
+                kind=ChatThreadKind.TASK,
+                task=task,
+                defaults={
+                    "project": task.project,
+                    "title": serializer.validated_data.get("title") or task.title,
+                },
+            )
+            fields_to_update = []
+            if thread.project_id != task.project_id:
+                thread.project = task.project
+                fields_to_update.append("project")
+            if not thread.title:
+                thread.title = task.title
+                fields_to_update.append("title")
+            if fields_to_update:
+                thread.save(update_fields=[*fields_to_update, "updated_at"])
+            sync_linked_thread_participants(thread, actor=request.user)
+            return Response(
+                ChatThreadSerializer(thread, context={"request": request}).data,
+                status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+            )
         recipient = serializer.validated_data.get("recipient")
         if not recipient:
             return Response({"recipient_id": ["This field is required for private threads."]}, status=status.HTTP_400_BAD_REQUEST)
@@ -1001,7 +1747,7 @@ class ChatMessagesView(APIView):
         if mentioned_users:
             message.mentions.add(*mentioned_users)
         thread.save(update_fields=["updated_at"])
-        recipients = list(thread.participants.exclude(id=request.user.id)) if thread.kind == ChatThreadKind.PRIVATE else []
+        recipients = list(chat_thread_recipients(thread, request.user))
         for recipient in recipients:
             create_notification(
                 recipient=recipient,

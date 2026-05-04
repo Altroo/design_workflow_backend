@@ -1,6 +1,7 @@
 from django.conf import settings
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.utils import timezone
 
 
@@ -36,6 +37,36 @@ class TaskStatus(models.TextChoices):
     DONE = "done", "Done"
 
 
+class SavedViewVisibility(models.TextChoices):
+    PRIVATE = "private", "Private"
+    TEAM = "team", "Team"
+
+
+class SavedViewDensity(models.TextChoices):
+    COMFORTABLE = "comfortable", "Comfortable"
+    COMPACT = "compact", "Compact"
+
+
+class TaskReviewState(models.TextChoices):
+    NOT_SUBMITTED = "not_submitted", "Not submitted"
+    NEEDS_REVIEW = "needs_review", "Needs review"
+    CHANGES_REQUESTED = "changes_requested", "Changes requested"
+    APPROVED = "approved", "Approved"
+
+
+class ArtifactApprovalState(models.TextChoices):
+    PENDING = "pending", "Pending"
+    CHANGES_REQUESTED = "changes_requested", "Changes requested"
+    APPROVED = "approved", "Approved"
+
+
+class NotificationDigestFrequency(models.TextChoices):
+    INSTANT = "instant", "Instant"
+    DAILY = "daily", "Daily"
+    WEEKLY = "weekly", "Weekly"
+    OFF = "off", "Off"
+
+
 class TaskActivityType(models.TextChoices):
     CREATED = "created", "Created"
     UPDATED = "updated", "Updated"
@@ -52,6 +83,9 @@ class TaskActivityType(models.TextChoices):
     CHECKLIST_UPDATED = "checklist_updated", "Checklist updated"
     ATTACHMENT_ADDED = "attachment_added", "Attachment added"
     TASK_ARCHIVED = "task_archived", "Task archived"
+    REVIEW_UPDATED = "review_updated", "Review updated"
+    ARTIFACT_VERSION_ADDED = "artifact_version_added", "Artifact version added"
+    ANNOTATION_ADDED = "annotation_added", "Annotation added"
 
 
 class NotificationType(models.TextChoices):
@@ -63,6 +97,8 @@ class NotificationType(models.TextChoices):
     TASK_STATUS = "task_status", "Task status"
     TASK_BLOCKED = "task_blocked", "Task blocked"
     CHAT_MESSAGE = "chat_message", "Chat message"
+    REVIEW_REQUESTED = "review_requested", "Review requested"
+    WORKFLOW_DIGEST = "workflow_digest", "Workflow digest"
 
 
 class Project(TimestampedModel):
@@ -117,6 +153,44 @@ class TaskLabel(TimestampedModel):
         return self.name
 
 
+class SavedView(TimestampedModel):
+    name = models.CharField(max_length=120)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="design_saved_views",
+    )
+    visibility = models.CharField(
+        max_length=16,
+        choices=SavedViewVisibility.choices,
+        default=SavedViewVisibility.PRIVATE,
+        db_index=True,
+    )
+    filters = models.JSONField(default=dict, blank=True)
+    sort = models.JSONField(default=dict, blank=True)
+    density = models.CharField(
+        max_length=16,
+        choices=SavedViewDensity.choices,
+        default=SavedViewDensity.COMFORTABLE,
+    )
+    collapsed_lanes = models.JSONField(default=list, blank=True)
+    show_archived = models.BooleanField(default=False)
+    is_default = models.BooleanField(default=False, db_index=True)
+
+    class Meta:
+        ordering = ("-is_default", "name")
+        constraints = (
+            models.UniqueConstraint(fields=("owner", "name"), name="unique_design_saved_view_owner_name"),
+        )
+        indexes = (
+            models.Index(fields=("owner", "visibility")),
+            models.Index(fields=("owner", "is_default")),
+        )
+
+    def __str__(self):
+        return self.name
+
+
 class Task(TimestampedModel):
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="tasks")
     title = models.CharField(max_length=255)
@@ -149,6 +223,28 @@ class Task(TimestampedModel):
     estimated_minutes = models.PositiveIntegerField(default=0)
     actual_minutes = models.PositiveIntegerField(default=0)
     work_started_at = models.DateTimeField(null=True, blank=True)
+    review_state = models.CharField(
+        max_length=24,
+        choices=TaskReviewState.choices,
+        default=TaskReviewState.NOT_SUBMITTED,
+        db_index=True,
+    )
+    review_requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="requested_design_task_reviews",
+    )
+    review_requested_at = models.DateTimeField(null=True, blank=True)
+    review_approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="approved_design_task_reviews",
+    )
+    review_approved_at = models.DateTimeField(null=True, blank=True)
     blocked_reason = models.TextField(blank=True)
     sort_order = models.PositiveIntegerField(default=0)
     labels = models.ManyToManyField(TaskLabel, blank=True, related_name="tasks")
@@ -166,6 +262,13 @@ class Task(TimestampedModel):
         on_delete=models.PROTECT,
         related_name="updated_design_tasks",
     )
+    source_chat_message = models.ForeignKey(
+        "ChatMessage",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_tasks",
+    )
 
     class Meta:
         ordering = ("project_id", "sort_order", "-created_at")
@@ -174,6 +277,7 @@ class Task(TimestampedModel):
             models.Index(fields=("current_assignee", "status")),
             models.Index(fields=("due_date", "status")),
             models.Index(fields=("archived", "status")),
+            models.Index(fields=("review_state", "status")),
         ]
 
     def __str__(self):
@@ -264,6 +368,95 @@ class TaskAttachment(TimestampedModel):
         return self.name
 
 
+class TaskArtifactVersion(TimestampedModel):
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="artifact_versions")
+    attachment = models.ForeignKey(
+        TaskAttachment,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="artifact_versions",
+    )
+    version_number = models.PositiveIntegerField()
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="uploaded_design_artifact_versions",
+    )
+    notes = models.TextField(blank=True)
+    approval_state = models.CharField(
+        max_length=24,
+        choices=ArtifactApprovalState.choices,
+        default=ArtifactApprovalState.PENDING,
+        db_index=True,
+    )
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="approved_design_artifact_versions",
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ("-version_number", "-created_at")
+        constraints = (
+            models.UniqueConstraint(fields=("task", "version_number"), name="unique_design_task_artifact_version"),
+        )
+        indexes = (
+            models.Index(fields=("task", "approval_state")),
+        )
+
+    def __str__(self):
+        return f"{self.task_id}:v{self.version_number}"
+
+
+class AttachmentAnnotation(TimestampedModel):
+    attachment = models.ForeignKey(TaskAttachment, on_delete=models.CASCADE, related_name="annotations")
+    version = models.ForeignKey(
+        TaskArtifactVersion,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="annotations",
+    )
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="design_attachment_annotations",
+    )
+    x_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        validators=(MinValueValidator(0), MaxValueValidator(100)),
+    )
+    y_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        validators=(MinValueValidator(0), MaxValueValidator(100)),
+    )
+    body = models.TextField()
+    resolved = models.BooleanField(default=False, db_index=True)
+    resolved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="resolved_design_attachment_annotations",
+    )
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ("created_at",)
+        indexes = (
+            models.Index(fields=("attachment", "resolved")),
+        )
+
+    def __str__(self):
+        return f"{self.attachment_id}:{self.x_percent},{self.y_percent}"
+
+
 class TimeEntry(TimestampedModel):
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="time_entries")
     user = models.ForeignKey(
@@ -344,6 +537,15 @@ class Notification(models.Model):
     )
     payload = models.JSONField(default=dict, blank=True)
     read_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    snoozed_until = models.DateTimeField(null=True, blank=True, db_index=True)
+    action_taken_at = models.DateTimeField(null=True, blank=True)
+    action_taken_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="acted_design_notifications",
+    )
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
@@ -354,15 +556,51 @@ class Notification(models.Model):
         return self.read_at is not None
 
 
+class NotificationPreference(TimestampedModel):
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="+",
+    )
+    mentions = models.BooleanField(default=True)
+    assignments = models.BooleanField(default=True)
+    review_requests = models.BooleanField(default=True)
+    due_soon = models.BooleanField(default=True)
+    digest_frequency = models.CharField(
+        max_length=16,
+        choices=NotificationDigestFrequency.choices,
+        default=NotificationDigestFrequency.INSTANT,
+    )
+
+    def __str__(self):
+        return f"{self.user_id}:{self.digest_frequency}"
+
+
 
 class ChatThreadKind(models.TextChoices):
     PUBLIC = "public", "Public"
     PRIVATE = "private", "Private"
+    PROJECT = "project", "Project"
+    TASK = "task", "Task"
 
 
 class ChatThread(TimestampedModel):
     kind = models.CharField(max_length=16, choices=ChatThreadKind.choices, db_index=True)
     title = models.CharField(max_length=255, blank=True)
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="chat_threads",
+    )
+    task = models.ForeignKey(
+        Task,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="chat_threads",
+    )
     participants = models.ManyToManyField(
         settings.AUTH_USER_MODEL,
         blank=True,
@@ -371,6 +609,22 @@ class ChatThread(TimestampedModel):
 
     class Meta:
         ordering = ("-updated_at",)
+        indexes = (
+            models.Index(fields=("kind", "project")),
+            models.Index(fields=("kind", "task")),
+        )
+        constraints = (
+            models.UniqueConstraint(
+                fields=("kind", "project"),
+                condition=Q(kind=ChatThreadKind.PROJECT, project__isnull=False),
+                name="unique_design_project_chat_thread",
+            ),
+            models.UniqueConstraint(
+                fields=("kind", "task"),
+                condition=Q(kind=ChatThreadKind.TASK, task__isnull=False),
+                name="unique_design_task_chat_thread",
+            ),
+        )
 
     def __str__(self):
         return self.title or self.kind

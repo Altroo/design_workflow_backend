@@ -4,6 +4,7 @@ import os
 from datetime import timedelta
 from pathlib import Path
 
+from celery.schedules import crontab
 from decouple import config
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -208,6 +209,16 @@ CHANNEL_LAYERS = {
 # Celery uses Redis DB 1 (facturation uses DB 0)
 CELERY_BROKER_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}/1"
 CELERY_RESULT_BACKEND = f"redis://{REDIS_HOST}:{REDIS_PORT}/1"
+CELERY_BEAT_SCHEDULE = {
+    "design-workflow-due-task-notifications": {
+        "task": "design_workflow.tasks.generate_due_task_notifications",
+        "schedule": crontab(minute=0, hour=7),
+    },
+    "design-workflow-notification-digests": {
+        "task": "design_workflow.tasks.generate_notification_digests",
+        "schedule": crontab(minute=30, hour=7),
+    },
+}
 
 ACCOUNT_USER_MODEL_USERNAME_FIELD = None
 ACCOUNT_USERNAME_REQUIRED = False
