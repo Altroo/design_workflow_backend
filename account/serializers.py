@@ -335,26 +335,29 @@ class ProfilePutSerializer(serializers.ModelSerializer):
         avatar_bytes = None
         old_avatar = instance.avatar
         old_avatar_cropped = instance.avatar_cropped
+        avatar_provided = "avatar" in validated_data
+        avatar_cropped_provided = "avatar_cropped" in validated_data
+        avatar_value = validated_data.get("avatar") if avatar_provided else None
+        avatar_cropped_value = (
+            validated_data.get("avatar_cropped") if avatar_cropped_provided else None
+        )
 
-        if "avatar" in validated_data:
+        if avatar_provided:
             avatar_file, avatar_bytes, is_url = self._process_image_field(
                 "avatar", validated_data
             )
-            if validated_data["avatar"] is None or validated_data["avatar"] == "":
+            if avatar_value is None or avatar_value == "":
                 instance.avatar = None
                 instance.avatar_cropped = None
             elif avatar_file:
                 instance.avatar = avatar_file
                 instance.avatar_cropped = None
 
-        if "avatar_cropped" in validated_data:
+        if avatar_cropped_provided:
             avatar_cropped_file, _, is_url = self._process_image_field(
                 "avatar_cropped", validated_data
             )
-            if (
-                validated_data["avatar_cropped"] is None
-                or validated_data["avatar_cropped"] == ""
-            ):
+            if avatar_cropped_value is None or avatar_cropped_value == "":
                 instance.avatar_cropped = None
             elif avatar_cropped_file:
                 instance.avatar_cropped = avatar_cropped_file
@@ -368,25 +371,21 @@ class ProfilePutSerializer(serializers.ModelSerializer):
         instance._avatar_bytes_for_celery = avatar_bytes if avatar_file else None
         instance.save()
 
-        if "avatar" in validated_data:
+        if avatar_provided:
             if avatar_file and old_avatar:
                 self._delete_file(old_avatar)
             if avatar_file and old_avatar_cropped:
                 self._delete_file(old_avatar_cropped)
-            if (
-                validated_data.get("avatar") is None
-                or validated_data.get("avatar") == ""
-            ) and old_avatar:
+            if (avatar_value is None or avatar_value == "") and old_avatar:
                 self._delete_file(old_avatar)
                 if old_avatar_cropped:
                     self._delete_file(old_avatar_cropped)
 
-        if "avatar_cropped" in validated_data:
+        if avatar_cropped_provided:
             if avatar_cropped_file and old_avatar_cropped:
                 self._delete_file(old_avatar_cropped)
             if (
-                validated_data.get("avatar_cropped") is None
-                or validated_data.get("avatar_cropped") == ""
+                avatar_cropped_value is None or avatar_cropped_value == ""
             ) and old_avatar_cropped:
                 self._delete_file(old_avatar_cropped)
 

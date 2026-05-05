@@ -64,6 +64,8 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 pytest-cache-files-*/
+.tmp/
+tmp*/
 cover/
 
 # Translations

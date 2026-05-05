@@ -431,12 +431,17 @@ class ProfileView(APIView):
     @staticmethod
     def patch(request, *args, **kwargs):
         user = request.user
+        editable_fields = (
+            "first_name",
+            "last_name",
+            "gender",
+            "avatar",
+            "avatar_cropped",
+        )
         data = {
-            "first_name": request.data.get("first_name"),
-            "last_name": request.data.get("last_name"),
-            "gender": request.data.get("gender", ""),
-            "avatar": request.data.get("avatar"),
-            "avatar_cropped": request.data.get("avatar_cropped"),
+            field: request.data[field]
+            for field in editable_fields
+            if field in request.data
         }
         serializer = ProfilePutSerializer(
             instance=user, data=data, partial=True, context={"request": request}

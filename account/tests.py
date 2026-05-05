@@ -1,8 +1,9 @@
 import os
-import tempfile
 import shutil
 from datetime import datetime, timezone
 from io import BytesIO
+from pathlib import Path
+from uuid import uuid4
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -47,8 +48,11 @@ from .tasks import (
 @pytest.fixture(autouse=True)
 def temp_media_root(settings):
     """Redirect MEDIA_ROOT to a throw-away temp dir for every test."""
-    temp_dir = tempfile.mkdtemp(dir=".")
-    settings.MEDIA_ROOT = temp_dir
+    media_base = Path(".tmp") / "test-media"
+    media_base.mkdir(parents=True, exist_ok=True)
+    temp_dir = media_base / f"test-{uuid4().hex}"
+    temp_dir.mkdir(parents=True, exist_ok=False)
+    settings.MEDIA_ROOT = str(temp_dir)
     yield
     try:
         shutil.rmtree(temp_dir)
@@ -258,6 +262,20 @@ class TestAccountAPI:
         assert resp.data["first_name"] == "Al"
         assert resp.data["gender"] == "H"
 
+    def test_patch_profile_partial_keeps_omitted_fields(self):
+        self.user.first_name = "Keep"
+        self.user.last_name = "Name"
+        self.user.save(update_fields=["first_name", "last_name"])
+        url = reverse("account:profil")
+
+        resp = self.auth_client.patch(url, {"gender": "Femme"}, format="json")
+
+        assert resp.status_code == status.HTTP_200_OK
+        self.user.refresh_from_db()
+        assert self.user.first_name == "Keep"
+        assert self.user.last_name == "Name"
+        assert self.user.gender == "F"
+
     def test_get_users_list(self):
         url = reverse("account:users")
         resp = self.auth_client.get(url)
@@ -435,7 +453,11 @@ class TestAccountAPIExtras:
             else:
                 paths.append(None)
 
-        resp = self.auth_client.patch(url, {"avatar": None, "avatar_cropped": None})
+        resp = self.auth_client.patch(
+            url,
+            {"avatar": None, "avatar_cropped": None},
+            format="json",
+        )
         if resp.status_code == 200:
             user.refresh_from_db()
             for p in paths:
@@ -921,8 +943,9 @@ class TestSerializers:
     def test_profileput_update_deletes_old_files(self, monkeypatch):
         user_obj = get_user_model()
         user = user_obj.objects.create_user(email="upd@example.com", password="p")
-        user.avatar.save("old.png", ContentFile(b"old"), save=True)
-        user.avatar_cropped.save("oldc.png", ContentFile(b"oldc"), save=True)
+        user.avatar.name = "user_avatars/old.png"
+        user.avatar_cropped.name = "user_avatars/oldc.png"
+        user.save(update_fields=["avatar", "avatar_cropped"])
 
         old_names = (user.avatar.name, user.avatar_cropped.name)
         deleted: list[str] = []
@@ -946,6 +969,7 @@ class TestSerializers:
             staticmethod(fake_process),
             raising=False,
         )
+        monkeypatch.setattr(type(user), "save", lambda self, *args, **kwargs: None)
 
         ser = ProfilePutSerializer(
             instance=user, data={"avatar": IMG_B64}, partial=True
@@ -964,6 +988,28 @@ class TestSerializers:
             or getattr(user.avatar_cropped, "name", None) != old_names[1]
         )
         assert len(deleted) >= 1 or name_changed
+
+    def test_profileput_update_clears_avatar_and_deletes_old_files(self, monkeypatch):
+        user_obj = get_user_model()
+        user = user_obj.objects.create_user(email="clear-avatar@example.com", password="p")
+        user.avatar.name = "user_avatars/old-avatar.png"
+        user.avatar_cropped.name = "user_avatars/old-cropped.png"
+        user.save(update_fields=["avatar", "avatar_cropped"])
+        old_names = {user.avatar.name, user.avatar_cropped.name}
+        deleted: list[str] = []
+
+        def fake_delete(self, field):
+            deleted.append(getattr(field, "name", str(field)))
+
+        monkeypatch.setattr(ProfilePutSerializer, "_delete_file", fake_delete, raising=False)
+
+        serializer = ProfilePutSerializer(instance=user, data={"avatar": None}, partial=True)
+        assert serializer.is_valid(), serializer.errors
+        updated = serializer.save()
+
+        assert not updated.avatar
+        assert not updated.avatar_cropped
+        assert old_names.issubset(set(deleted))
 
 
 @pytest.mark.django_db

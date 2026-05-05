@@ -392,6 +392,134 @@ class TestPremiumBoardViews:
         result_types = {item["type"] for item in response.data}
         assert {"task", "project", "file", "chat"}.issubset(result_types)
 
+    def test_workspace_search_scopes_designer_results_to_accessible_work(self):
+        manager = make_manager("manager-search-scope@test.com")
+        designer = make_designer("designer-search-scope@test.com")
+        outsider = make_designer("outsider-search-scope@test.com")
+        visible_project = Project.objects.create(
+            name="Studio visible project",
+            description="Visible context",
+            manager=manager,
+            priority=Priority.HIGH,
+            status=ProjectStatus.ACTIVE,
+        )
+        visible_task = Task.objects.create(
+            project=visible_project,
+            title="Studio visible task",
+            description="Designer can find this",
+            current_assignee=designer,
+            status=TaskStatus.TODO,
+            priority=Priority.HIGH,
+            created_by=manager,
+            updated_by=manager,
+        )
+        TaskAttachment.objects.create(
+            task=visible_task,
+            uploaded_by=designer,
+            file="design_workflow/task_attachments/studio-visible.png",
+            name="studio-visible.png",
+            mime_type="image/png",
+            size=12,
+        )
+        hidden_project = Project.objects.create(
+            name="Studio hidden project",
+            description="Hidden context",
+            manager=manager,
+            priority=Priority.HIGH,
+            status=ProjectStatus.ACTIVE,
+        )
+        hidden_task = Task.objects.create(
+            project=hidden_project,
+            title="Studio hidden task",
+            description="Designer must not find this",
+            current_assignee=outsider,
+            status=TaskStatus.TODO,
+            priority=Priority.HIGH,
+            created_by=manager,
+            updated_by=manager,
+        )
+        TaskAttachment.objects.create(
+            task=hidden_task,
+            uploaded_by=outsider,
+            file="design_workflow/task_attachments/studio-hidden.png",
+            name="studio-hidden.png",
+            mime_type="image/png",
+            size=12,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=designer)
+        response = client.get("/api/design-workflow/search/?q=studio")
+
+        assert response.status_code == 200
+        result_titles = {item["title"] for item in response.data}
+        assert {"Studio visible task", "Studio visible project", "studio-visible.png"}.issubset(result_titles)
+        assert "Studio hidden task" not in result_titles
+        assert "Studio hidden project" not in result_titles
+        assert "studio-hidden.png" not in result_titles
+
+
+class TestWorkflowAccessContracts:
+    def test_designer_read_access_is_limited_to_assigned_project_context(self):
+        manager = make_manager("manager-access@test.com")
+        designer = make_designer("designer-access@test.com")
+        outsider = make_designer("outsider-access@test.com")
+        visible_project = Project.objects.create(
+            name="Accessible project",
+            description="Assigned work",
+            manager=manager,
+            priority=Priority.MEDIUM,
+            status=ProjectStatus.ACTIVE,
+        )
+        visible_task = Task.objects.create(
+            project=visible_project,
+            title="Accessible task",
+            current_assignee=designer,
+            status=TaskStatus.TODO,
+            priority=Priority.MEDIUM,
+            created_by=manager,
+            updated_by=manager,
+        )
+        hidden_project = Project.objects.create(
+            name="Restricted project",
+            description="Unassigned work",
+            manager=manager,
+            priority=Priority.MEDIUM,
+            status=ProjectStatus.ACTIVE,
+        )
+        hidden_task = Task.objects.create(
+            project=hidden_project,
+            title="Restricted task",
+            current_assignee=outsider,
+            status=TaskStatus.TODO,
+            priority=Priority.MEDIUM,
+            created_by=manager,
+            updated_by=manager,
+        )
+        hidden_attachment = TaskAttachment.objects.create(
+            task=hidden_task,
+            uploaded_by=outsider,
+            file="design_workflow/task_attachments/restricted.png",
+            name="restricted.png",
+            mime_type="image/png",
+            size=12,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=designer)
+
+        assert client.get(f"/api/design-workflow/projects/{visible_project.id}/").status_code == 200
+        assert client.get(f"/api/design-workflow/tasks/{visible_task.id}/").status_code == 200
+        assert client.get(f"/api/design-workflow/projects/{hidden_project.id}/").status_code == 404
+        assert client.get(f"/api/design-workflow/tasks/{hidden_task.id}/").status_code == 404
+        assert client.get(f"/api/design-workflow/attachments/{hidden_attachment.id}/annotations/").status_code == 404
+
+        list_response = client.get("/api/design-workflow/tasks/")
+        assert list_response.status_code == 200
+        task_ids = {item["id"] for item in list_response.data}
+        assert visible_task.id in task_ids
+        assert hidden_task.id not in task_ids
+
 
 class TestLinkedChatWorkflow:
     def test_project_and_task_threads_are_accessible_to_work_context_users(self):

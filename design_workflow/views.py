@@ -253,6 +253,21 @@ def is_manager_user(user) -> bool:
     return bool(user and user.is_authenticated and (user.role == "manager" or user.is_staff or getattr(user, "is_superuser", False)))
 
 
+def get_accessible_project_queryset(user, queryset=None):
+    queryset = queryset if queryset is not None else Project.objects.all()
+    if is_manager_user(user):
+        return queryset
+    assigned_project_ids = Task.objects.filter(current_assignee=user).values("project_id")
+    return queryset.filter(Q(manager=user) | Q(id__in=assigned_project_ids)).distinct()
+
+
+def get_accessible_task_queryset(user, queryset=None):
+    queryset = queryset if queryset is not None else Task.objects.all()
+    if is_manager_user(user):
+        return queryset
+    return queryset.filter(Q(current_assignee=user) | Q(project__manager=user)).distinct()
+
+
 def user_can_access_project_context(user, project: Project) -> bool:
     if not user or not user.is_authenticated or not project:
         return False
@@ -349,11 +364,14 @@ def chat_thread_recipients(thread: ChatThread, sender):
     return User.objects.filter(id__in=recipient_ids, is_active=True)
 
 
-def get_task_or_404(pk: int) -> Task:
+def get_task_or_404(pk: int, user=None) -> Task:
     try:
-        return get_task_detail_queryset().get(pk=pk)
+        task = get_task_detail_queryset().get(pk=pk)
     except Task.DoesNotExist as exc:
         raise Http404 from exc
+    if user is not None and not user_can_access_task_context(user, task):
+        raise Http404
+    return task
 
 
 def get_thread_or_404(request, pk: int) -> ChatThread:
@@ -509,7 +527,11 @@ class WorkspaceSearchView(APIView):
         results = []
 
         if "task" in requested_types:
-            task_queryset = apply_task_filters(get_task_queryset(), request.query_params, request.user).filter(
+            task_queryset = apply_task_filters(
+                get_accessible_task_queryset(request.user, get_task_queryset()),
+                request.query_params,
+                request.user,
+            ).filter(
                 Q(title__icontains=query)
                 | Q(description__icontains=query)
                 | Q(project__name__icontains=query)
@@ -533,7 +555,10 @@ class WorkspaceSearchView(APIView):
             )
 
         if "project" in requested_types:
-            project_queryset = Project.objects.select_related("manager").filter(
+            project_queryset = get_accessible_project_queryset(
+                request.user,
+                Project.objects.select_related("manager"),
+            ).filter(
                 Q(name__icontains=query) | Q(description__icontains=query)
             )[:10]
             results.extend(
@@ -592,8 +617,13 @@ class WorkspaceSearchView(APIView):
 
         if "file" in requested_types:
             accessible_thread_ids = get_chat_thread_queryset_for_user(request.user).values("id")
+            accessible_task_ids = get_accessible_task_queryset(
+                request.user,
+                Task.objects.all(),
+            ).values("id")
             task_files = TaskAttachment.objects.select_related("task", "task__project", "uploaded_by").filter(
-                Q(name__icontains=query) | Q(task__title__icontains=query) | Q(task__project__name__icontains=query)
+                Q(task_id__in=accessible_task_ids),
+                Q(name__icontains=query) | Q(task__title__icontains=query) | Q(task__project__name__icontains=query),
             )[:10]
             results.extend(
                 {
@@ -658,7 +688,10 @@ class ProjectListCreateView(APIView):
     permission_classes = (IsManagerOrReadOnly,)
 
     def get(self, request):
-        queryset = Project.objects.select_related("manager").all()
+        queryset = get_accessible_project_queryset(
+            request.user,
+            Project.objects.select_related("manager").all(),
+        )
         archived = parse_bool(request.query_params.get("archived"))
         if archived is not None:
             queryset = queryset.filter(archived=archived)
@@ -685,6 +718,8 @@ class ProjectDetailView(APIView):
 
     def get(self, request, pk: int):
         project = self.get_object(pk)
+        if not user_can_access_project_context(request.user, project):
+            raise Http404
         return Response(ProjectDetailSerializer(project, context={"request": request}).data, status=status.HTTP_200_OK)
 
     def patch(self, request, pk: int):
@@ -704,7 +739,14 @@ class TaskListCreateView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def get(self, request):
-        queryset = apply_task_sorting(apply_task_filters(get_task_queryset(), request.query_params, request.user), request.query_params)
+        queryset = apply_task_sorting(
+            apply_task_filters(
+                get_accessible_task_queryset(request.user, get_task_queryset()),
+                request.query_params,
+                request.user,
+            ),
+            request.query_params,
+        )
         return Response(TaskCardSerializer(queryset, many=True, context={"request": request}).data, status=status.HTTP_200_OK)
 
     def post(self, request):
@@ -741,12 +783,12 @@ class TaskDetailView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def get(self, request, pk: int):
-        return Response(TaskDetailSerializer(get_task_or_404(pk), context={"request": request}).data, status=status.HTTP_200_OK)
+        return Response(TaskDetailSerializer(get_task_or_404(pk, request.user), context={"request": request}).data, status=status.HTTP_200_OK)
 
     def patch(self, request, pk: int):
         if request.user.role != "manager":
             return Response(status=status.HTTP_403_FORBIDDEN)
-        task = get_task_or_404(pk)
+        task = get_task_or_404(pk, request.user)
         previous = {
             "status": task.status,
             "priority": task.priority,
@@ -793,7 +835,7 @@ class TaskStatusView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def patch(self, request, pk: int):
-        task = get_task_or_404(pk)
+        task = get_task_or_404(pk, request.user)
         if not can_mutate_task(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         serializer = TaskStatusUpdateSerializer(data=request.data)
@@ -833,9 +875,14 @@ class TaskReorderView(APIView):
         with transaction.atomic():
             tasks_by_id = {
                 task.id: task
-                for task in Task.objects.select_related("project", "current_assignee").select_for_update(of=("self",)).filter(id__in=ordered_ids)
+                for task in get_accessible_task_queryset(
+                    request.user,
+                    Task.objects.select_related("project", "current_assignee")
+                    .select_for_update(of=("self",))
+                    .filter(id__in=ordered_ids),
+                )
             }
-            moved_task = tasks_by_id.get(moved_task_id) or get_task_or_404(moved_task_id)
+            moved_task = tasks_by_id.get(moved_task_id) or get_task_or_404(moved_task_id, request.user)
             if not can_mutate_task(request.user, moved_task):
                 return Response(status=status.HTTP_403_FORBIDDEN)
 
@@ -895,7 +942,7 @@ class TaskReorderView(APIView):
         if updated_tasks:
             broadcast_task_event(moved_task, "reordered")
 
-        response_tasks = get_task_queryset().filter(id__in=ordered_ids)
+        response_tasks = get_accessible_task_queryset(request.user, get_task_queryset()).filter(id__in=ordered_ids)
         return Response(TaskCardSerializer(response_tasks, many=True, context={"request": request}).data, status=status.HTTP_200_OK)
 
 
@@ -903,7 +950,7 @@ class TaskCompletionView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def post(self, request, pk: int):
-        task = get_task_or_404(pk)
+        task = get_task_or_404(pk, request.user)
         if not can_mutate_task(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         serializer = TaskCompletionSerializer(data=request.data)
@@ -921,7 +968,7 @@ class TaskArchiveView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def post(self, request, pk: int):
-        task = get_task_or_404(pk)
+        task = get_task_or_404(pk, request.user)
         if request.user.role != "manager" and task.current_assignee_id != request.user.id:
             return Response(status=status.HTTP_403_FORBIDDEN)
         serializer = TaskArchiveSerializer(data=request.data)
@@ -940,7 +987,7 @@ class TaskCoverImageView(APIView):
     parser_classes = (parsers.MultiPartParser, parsers.FormParser)
 
     def post(self, request, pk: int):
-        task = get_task_or_404(pk)
+        task = get_task_or_404(pk, request.user)
         if request.user.role != "manager" and task.current_assignee_id != request.user.id:
             return Response(status=status.HTTP_403_FORBIDDEN)
         cover_image = request.FILES.get("cover_image")
@@ -954,7 +1001,7 @@ class TaskCoverImageView(APIView):
         return Response(TaskDetailSerializer(get_task_detail_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_200_OK)
 
     def delete(self, request, pk: int):
-        task = get_task_or_404(pk)
+        task = get_task_or_404(pk, request.user)
         if request.user.role != "manager" and task.current_assignee_id != request.user.id:
             return Response(status=status.HTTP_403_FORBIDDEN)
         if task.cover_image:
@@ -998,11 +1045,11 @@ class TaskChecklistGroupListView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def get(self, request, pk: int):
-        task = get_task_or_404(pk)
+        task = get_task_or_404(pk, request.user)
         return Response(TaskChecklistSerializer(task.checklists.all(), many=True).data, status=status.HTTP_200_OK)
 
     def post(self, request, pk: int):
-        task = get_task_or_404(pk)
+        task = get_task_or_404(pk, request.user)
         if not can_mutate_task(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         serializer = ChecklistCreateSerializer(data=request.data)
@@ -1017,11 +1064,11 @@ class TaskChecklistListView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def get(self, request, pk: int):
-        task = get_task_or_404(pk)
+        task = get_task_or_404(pk, request.user)
         return Response(TaskChecklistItemSerializer(task.checklist_items.all(), many=True).data, status=status.HTTP_200_OK)
 
     def post(self, request, pk: int):
-        task = get_task_or_404(pk)
+        task = get_task_or_404(pk, request.user)
         if not can_mutate_task(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         serializer = ChecklistItemCreateSerializer(data=request.data)
@@ -1043,15 +1090,15 @@ class TaskChecklistListView(APIView):
 class TaskChecklistDetailView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
-    def get_object(self, pk: int, item_id: int):
-        task = get_task_or_404(pk)
+    def get_object(self, request, pk: int, item_id: int):
+        task = get_task_or_404(pk, request.user)
         try:
             return task, task.checklist_items.get(pk=item_id)
         except TaskChecklistItem.DoesNotExist as exc:
             raise Http404 from exc
 
     def patch(self, request, pk: int, item_id: int):
-        task, item = self.get_object(pk, item_id)
+        task, item = self.get_object(request, pk, item_id)
         if not can_mutate_task(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         was_done = item.done
@@ -1071,7 +1118,7 @@ class TaskChecklistDetailView(APIView):
         return Response(TaskChecklistItemSerializer(item).data, status=status.HTTP_200_OK)
 
     def delete(self, request, pk: int, item_id: int):
-        task, item = self.get_object(pk, item_id)
+        task, item = self.get_object(request, pk, item_id)
         if not can_mutate_task(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         item_id_value = item.id
@@ -1086,11 +1133,11 @@ class TaskAttachmentsView(APIView):
     parser_classes = (parsers.MultiPartParser, parsers.FormParser)
 
     def get(self, request, pk: int):
-        task = get_task_or_404(pk)
+        task = get_task_or_404(pk, request.user)
         return Response(TaskAttachmentSerializer(task.attachments.all(), many=True, context={"request": request}).data, status=status.HTTP_200_OK)
 
     def post(self, request, pk: int):
-        task = get_task_or_404(pk)
+        task = get_task_or_404(pk, request.user)
         if not can_mutate_task(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         upload = request.FILES.get("file")
@@ -1113,7 +1160,7 @@ class TaskAttachmentDetailView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def post(self, request, pk: int, attachment_id: int):
-        task = get_task_or_404(pk)
+        task = get_task_or_404(pk, request.user)
         if not can_mutate_task(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         try:
@@ -1135,7 +1182,7 @@ class TaskAttachmentDetailView(APIView):
         return Response(TaskDetailSerializer(get_task_detail_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_200_OK)
 
     def delete(self, request, pk: int, attachment_id: int):
-        task = get_task_or_404(pk)
+        task = get_task_or_404(pk, request.user)
         if not can_mutate_task(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         try:
@@ -1151,7 +1198,7 @@ class TaskReviewView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def post(self, request, pk: int):
-        task = get_task_or_404(pk)
+        task = get_task_or_404(pk, request.user)
         if not can_mutate_task(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         serializer = TaskReviewUpdateSerializer(data=request.data)
@@ -1208,12 +1255,12 @@ class TaskArtifactVersionListView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def get(self, request, pk: int):
-        task = get_task_or_404(pk)
+        task = get_task_or_404(pk, request.user)
         versions = task.artifact_versions.select_related("uploaded_by", "approved_by", "attachment__uploaded_by").prefetch_related("attachment__annotations")
         return Response(TaskArtifactVersionSerializer(versions, many=True, context={"request": request}).data, status=status.HTTP_200_OK)
 
     def post(self, request, pk: int):
-        task = get_task_or_404(pk)
+        task = get_task_or_404(pk, request.user)
         if not can_mutate_task(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         serializer = TaskArtifactVersionSerializer(data=request.data, context={"request": request})
@@ -1243,19 +1290,22 @@ class AttachmentAnnotationListView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     @staticmethod
-    def get_attachment(pk: int) -> TaskAttachment:
+    def get_attachment(request, pk: int) -> TaskAttachment:
         try:
-            return TaskAttachment.objects.select_related("task", "task__project").get(pk=pk)
+            attachment = TaskAttachment.objects.select_related("task", "task__project").get(pk=pk)
         except TaskAttachment.DoesNotExist as exc:
             raise Http404 from exc
+        if not user_can_access_task_context(request.user, attachment.task):
+            raise Http404
+        return attachment
 
     def get(self, request, pk: int):
-        attachment = self.get_attachment(pk)
+        attachment = self.get_attachment(request, pk)
         annotations = attachment.annotations.select_related("author", "resolved_by", "version")
         return Response(AttachmentAnnotationSerializer(annotations, many=True).data, status=status.HTTP_200_OK)
 
     def post(self, request, pk: int):
-        attachment = self.get_attachment(pk)
+        attachment = self.get_attachment(request, pk)
         if not can_mutate_task(request.user, attachment.task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         serializer = AttachmentAnnotationSerializer(data=request.data)
@@ -1282,7 +1332,7 @@ class TaskReassignView(APIView):
     permission_classes = (IsManager,)
 
     def post(self, request, pk: int):
-        task = get_task_or_404(pk)
+        task = get_task_or_404(pk, request.user)
         serializer = TaskReassignSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         assignee = serializer.validated_data["assignee"]
@@ -1301,11 +1351,11 @@ class TaskCommentsView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def get(self, request, pk: int):
-        task = get_task_or_404(pk)
+        task = get_task_or_404(pk, request.user)
         return Response(TaskCommentSerializer(task.comments.select_related("author"), many=True).data, status=status.HTTP_200_OK)
 
     def post(self, request, pk: int):
-        task = get_task_or_404(pk)
+        task = get_task_or_404(pk, request.user)
         if not can_mutate_task(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         serializer = CommentCreateSerializer(data=request.data)
@@ -1325,13 +1375,13 @@ class TaskTimeEntriesView(APIView):
     def get(self, request, pk: int):
         if request.user.role != "manager":
             return Response(status=status.HTTP_403_FORBIDDEN)
-        task = get_task_or_404(pk)
+        task = get_task_or_404(pk, request.user)
         return Response(TimeEntrySerializer(task.time_entries.select_related("user"), many=True).data, status=status.HTTP_200_OK)
 
     def post(self, request, pk: int):
         if request.user.role != "manager":
             return Response(status=status.HTTP_403_FORBIDDEN)
-        task = get_task_or_404(pk)
+        task = get_task_or_404(pk, request.user)
         if not can_mutate_task(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         serializer = TimeEntryCreateSerializer(data=request.data)

@@ -1,5 +1,6 @@
 import django_filters
 from django.contrib.postgres.search import SearchVector, SearchQuery, SearchRank
+from django.db import connection
 from django.db.models import Case, When, Value, CharField, Q, F, FloatField
 from django.db.utils import DatabaseError
 from django.utils.translation import gettext_lazy as _
@@ -190,6 +191,9 @@ class UsersFilter(IsEmptyAutoMixin, django_filters.FilterSet):
             | Q(email__icontains=value)
             | Q(gender_display__icontains=value)
         ).annotate(rank=Value(0.0, output_field=FloatField()))
+
+        if connection.vendor != "postgresql":
+            return fallback_results.distinct().order_by("-rank")
 
         # Combine and deduplicate, ordering by typed rank
         return (fts_results | fallback_results).distinct().order_by("-rank")
