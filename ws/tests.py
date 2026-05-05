@@ -2,12 +2,12 @@ import pytest
 from channels.db import database_sync_to_async
 from channels.testing import WebsocketCommunicator
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import AnonymousUser
 from rest_framework_simplejwt.tokens import AccessToken
 from unittest.mock import AsyncMock, MagicMock
 
 from design_workflow_backend.asgi import application
 from ws.jwt_middleware import (
-    _AwaitableUser,
     SimpleJwtTokenAuthMiddleware,
     simplejwttokenauthmiddlewarestack,
 )
@@ -33,16 +33,20 @@ class TestWebSocketConsumer:
         self.user = await create_user()
         self.token = await generate_token(self.user)
 
-    async def test_echo_message(self):
+    async def test_ping_message(self):
         await self.async_setup()
 
         communicator = WebsocketCommunicator(application, f"/ws?token={self.token}")
         connected, _ = await communicator.connect()
         assert connected
 
-        await communicator.send_json_to({"message": "Hello WebSocket!"})
-        response = await communicator.receive_json_from()
-        assert response["message"] == "Hello WebSocket!"
+        await communicator.send_json_to({"type": "ping"})
+        for _ in range(3):
+            response = await communicator.receive_json_from()
+            if response.get("type") == "pong":
+                break
+        else:
+            pytest.fail("WebSocket did not return a pong response.")
 
         await communicator.disconnect()
 
@@ -61,58 +65,6 @@ class TestWebSocketConsumer:
         result = simplejwttokenauthmiddlewarestack(lambda scope, receive, send: None)
         assert callable(result)
         assert isinstance(result, SimpleJwtTokenAuthMiddleware)
-
-
-class TestAwaitableUserExtra:
-    """Tests for _AwaitableUser class."""
-
-    def test_with_user_directly(self):
-        """Test _AwaitableUser with a user object directly."""
-        user = MagicMock(email="test@example.com")
-        awaitable = _AwaitableUser(user)
-        assert awaitable.email == "test@example.com"
-
-    @pytest.mark.asyncio
-    async def test_getattr_raises_when_not_awaited(self):
-        """Test that getattr raises when user is coroutine and not awaited."""
-
-        async def coro():
-            return MagicMock(email="coro@example.com")
-
-        coroutine = coro()
-        awaitable = _AwaitableUser(coroutine)
-        with pytest.raises(AttributeError, match="not available until user is awaited"):
-            _ = awaitable.email
-        # Properly await the coroutine to avoid RuntimeWarning
-        await coroutine
-
-    @pytest.mark.asyncio
-    async def test_await_with_user(self):
-        """Test awaiting _AwaitableUser with a direct user."""
-        user = MagicMock(email="direct@example.com")
-        awaitable = _AwaitableUser(user)
-        result = await awaitable
-        assert result == user
-
-    @pytest.mark.asyncio
-    async def test_await_with_coroutine(self):
-        """Test awaiting _AwaitableUser with a coroutine."""
-
-        async def get_user():
-            return MagicMock(email="async@example.com")
-
-        awaitable = _AwaitableUser(get_user())
-        result = await awaitable
-        assert result.email == "async@example.com"
-
-    @pytest.mark.asyncio
-    async def test_await_multiple_times(self):
-        """Test awaiting multiple times returns same user."""
-        user = MagicMock(id=123)
-        awaitable = _AwaitableUser(user)
-        result1 = await awaitable
-        result2 = await awaitable
-        assert result1 == result2
 
 
 class TestSimpleJwtTokenAuthMiddlewareExtra:
@@ -142,7 +94,7 @@ class TestSimpleJwtTokenAuthMiddlewareExtra:
 
         await middleware(scope, AsyncMock(), send)
 
-        assert isinstance(scope["user"], _AwaitableUser)
+        assert isinstance(scope["user"], AnonymousUser)
         send.assert_called()
 
     @pytest.mark.asyncio

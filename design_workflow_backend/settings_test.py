@@ -3,6 +3,8 @@ Test-specific settings. Inherits from the main settings module and overrides
 only what is necessary for the test environment.
 """
 
+import os
+import tempfile
 from pathlib import Path
 
 from design_workflow_backend.settings import *  # noqa: F401, F403
@@ -54,9 +56,19 @@ CORS_ORIGIN_WHITELIST = ("http://localhost:3004",)
 
 ACCOUNT_DEFAULT_HTTP_PROTOCOL = "http"
 
+TEST_DATABASE_PATH = os.environ.get(
+    "DESIGN_WORKFLOW_TEST_DB",
+    str(Path(tempfile.gettempdir()) / "design_workflow_test_db.sqlite3"),
+)
+if TEST_DATABASE_PATH != ":memory:":
+    Path(TEST_DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
-        "NAME": str(Path(BASE_DIR) / "test_db.sqlite3"),  # noqa: F405
+        "NAME": TEST_DATABASE_PATH,
+        "TEST": {
+            "NAME": TEST_DATABASE_PATH,
+        },
     }
 }
