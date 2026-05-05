@@ -314,24 +314,22 @@ def seed_design_workflow_e2e(*, manager_email: str, designer_email: str, passwor
                 "digest_frequency": NotificationDigestFrequency.DAILY,
             },
         )
-        Notification.objects.get_or_create(
+        review_notification = upsert_seed_notification(
             recipient=manager,
-            type=NotificationType.REVIEW_REQUESTED,
+            notification_type=NotificationType.REVIEW_REQUESTED,
             task=review_task,
             project=project,
-            defaults={"payload": {"review_state": TaskReviewState.NEEDS_REVIEW, "notes": "Seeded review request"}},
+            payload={"review_state": TaskReviewState.NEEDS_REVIEW, "notes": "Seeded review request"},
         )
-        Notification.objects.get_or_create(
+        chat_notification = upsert_seed_notification(
             recipient=designer,
-            type=NotificationType.CHAT_MESSAGE,
+            notification_type=NotificationType.CHAT_MESSAGE,
             task=None,
             project=project,
-            defaults={
-                "payload": {
-                    "thread_id": project_thread.id,
-                    "message_id": source_message.id,
-                    "title": "E2E source message",
-                }
+            payload={
+                "thread_id": project_thread.id,
+                "message_id": source_message.id,
+                "title": "E2E source message",
             },
         )
 
@@ -346,4 +344,33 @@ def seed_design_workflow_e2e(*, manager_email: str, designer_email: str, passwor
         "source_chat_message_id": source_message.id,
         "annotation_id": annotation.id,
         "artifact_version_id": version.id,
+        "review_notification_id": review_notification.id,
+        "chat_notification_id": chat_notification.id,
     }
+
+
+def upsert_seed_notification(*, recipient, notification_type: str, task, project, payload: dict) -> Notification:
+    queryset = Notification.objects.filter(
+        recipient=recipient,
+        type=notification_type,
+        task=task,
+        project=project,
+    ).order_by("id")
+    notification = queryset.first()
+    if notification is None:
+        return Notification.objects.create(
+            recipient=recipient,
+            type=notification_type,
+            task=task,
+            project=project,
+            payload=payload,
+        )
+
+    notification.payload = payload
+    notification.read_at = None
+    notification.snoozed_until = None
+    notification.action_taken_at = None
+    notification.action_taken_by = None
+    notification.save(update_fields=["payload", "read_at", "snoozed_until", "action_taken_at", "action_taken_by"])
+    queryset.exclude(pk=notification.pk).delete()
+    return notification
