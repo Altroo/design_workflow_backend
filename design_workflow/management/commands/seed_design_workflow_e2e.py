@@ -263,11 +263,17 @@ def seed_design_workflow_e2e(*, manager_email: str, designer_email: str, passwor
         task_thread.participants.add(manager, designer)
         task_thread.save()
 
-        source_message, _ = ChatMessage.objects.get_or_create(
+        source_message = ChatMessage.objects.filter(
             thread=project_thread,
             sender=manager,
-            body="E2E source message: convert this decision into a task.",
-        )
+            body__startswith="E2E source message: convert this decision into a task.",
+        ).first()
+        if not source_message:
+            source_message = ChatMessage.objects.create(
+                thread=project_thread,
+                sender=manager,
+                body="E2E source message: convert this decision into a task.",
+            )
         source_message.read_by.add(manager)
         source_message.mentions.add(designer)
 
@@ -292,6 +298,8 @@ def seed_design_workflow_e2e(*, manager_email: str, designer_email: str, passwor
         source_task.source_chat_message = source_message
         source_task.updated_by = manager
         source_task.save()
+        source_message.body = f"E2E source message: convert this decision into a task. #T{source_task.id}"
+        source_message.save(update_fields=["body", "updated_at"])
 
         SavedView.objects.update_or_create(
             owner=manager,
