@@ -730,6 +730,8 @@ def seed_chat(*, projects: dict, tasks: dict, users: dict, now):
     public_thread = get_or_create_public_thread(users=users)
     beta_thread = get_or_create_project_thread(projects["beta_system"], users=users)
     booking_thread = get_or_create_project_thread(projects["booking_flow"], users=users)
+    sales_thread = get_or_create_project_thread(projects["sales_collateral"], users=users)
+    archive_thread = get_or_create_project_thread(projects["qa_reference"], users=users)
     review_thread = get_or_create_task_thread(tasks["review_mobile"], users=users)
     direct_thread = get_or_create_direct_thread(users=users)
 
@@ -773,6 +775,21 @@ def seed_chat(*, projects: dict, tasks: dict, users: dict, now):
             created_at=now - timedelta(hours=12),
             read_by=(users["nadia"], users["maya"]),
         ),
+        "sales_handoff": ensure_message(
+            thread=sales_thread,
+            sender=users["lina"],
+            body="Sales collateral is paused until the final brand direction lands, but the handoff deck draft is ready.",
+            created_at=now - timedelta(hours=10),
+            mentions=(users["owner"],),
+            read_by=(users["lina"], users["owner"]),
+        ),
+        "archive_note": ensure_message(
+            thread=archive_thread,
+            sender=users["nadia"],
+            body="QA archive is complete and can stay visible as a reference for done-state reporting.",
+            created_at=now - timedelta(hours=8),
+            read_by=(users["nadia"], users["maya"], users["owner"]),
+        ),
         "review_pin": ensure_message(
             thread=review_thread,
             sender=users["lina"],
@@ -801,7 +818,7 @@ def seed_chat(*, projects: dict, tasks: dict, users: dict, now):
         note="Review mobile footer spacing before beta access.",
     )
 
-    threads = (public_thread, beta_thread, booking_thread, review_thread, direct_thread)
+    threads = (public_thread, beta_thread, booking_thread, sales_thread, archive_thread, review_thread, direct_thread)
     for thread in threads:
         last_message = thread.messages.order_by("-created_at").first()
         if last_message:
@@ -1037,4 +1054,3 @@ def seed_notification_preferences(*, owner):
             "digest_frequency": NotificationDigestFrequency.INSTANT,
         },
     )
-
