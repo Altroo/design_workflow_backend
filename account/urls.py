@@ -14,6 +14,7 @@ from .views import (
     UserDetailEditDeleteView,
     BulkDeleteUsersView,
 )
+from .sso import SSOExchangeView
 
 app_name = "account"
 
@@ -52,4 +53,5 @@ urlpatterns = [
     # POST : Tokens, Verify if token valid, Refresh access token
     path("token_verify/", TokenVerifyView.as_view(), name="token_verify"),
     path("token_refresh/", TokenRefreshView.as_view(), name="token_refresh"),
+    path("sso/exchange/", SSOExchangeView.as_view(), name="sso-exchange"),
 ]

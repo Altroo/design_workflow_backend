@@ -79,7 +79,7 @@ TEMPLATES = [
 ]
 
 CORS_ALLOWED_ORIGINS = config(
-    "CORS_ALLOWED_ORIGINS", default="http://localhost:3004"
+    "CORS_ALLOWED_ORIGINS", default="http://localhost:3005"
 ).split(",")
 CORS_ALLOW_CREDENTIALS = True
 
@@ -242,6 +242,15 @@ SERVER_EMAIL = config("SERVER_EMAIL", default="")
 
 API_URL = config("API_URL")
 FRONTEND_URL = config("FRONTEND_URL", default="")
+EBH_SSO_APP_SLUG = config("EBH_SSO_APP_SLUG", default="design_workflow")
+EBH_SSO_VERIFY_URL = config(
+    "EBH_SSO_VERIFY_URL",
+    default="http://localhost:8004/api/account/sso/verify/",
+)
+EBH_SSO_SHARED_SECRET = config(
+    "EBH_SSO_SHARED_SECRET",
+    default="development-ebh-sso-secret" if DEBUG else "",
+)
 
 # ──────────────────────────────────────────────
 # Security settings
