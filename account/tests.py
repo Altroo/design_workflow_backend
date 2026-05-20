@@ -32,6 +32,7 @@ from account.serializers import (
 )
 from .filters import UsersFilter
 from .models import CustomUser
+from .sso import SSOExchangeView
 from .tasks import (
     send_email,
     start_deleting_expired_codes,
@@ -61,6 +62,41 @@ def temp_media_root(settings):
 
 
 pytestmark = pytest.mark.django_db
+
+
+class TestSSOExchangeView:
+    def test_serialize_user_includes_workflow_access_fields(self):
+        user = CustomUser.objects.create_user(
+            email="manager-sso@example.com",
+            password="pass",
+            first_name="Manager",
+            last_name="SSO",
+            is_staff=True,
+        )
+
+        payload = SSOExchangeView._serialize_user(user)
+
+        assert payload["role"] == CustomUser.UserRole.MANAGER
+        assert payload["is_staff"] is True
+        assert payload["is_superuser"] is False
+        assert payload["can_view"] is True
+        assert payload["can_create"] is False
+
+    def test_sso_creates_central_admin_as_manager(self):
+        user = SSOExchangeView._get_or_create_user(
+            {
+                "sub": "central-admin-1",
+                "email": "central-admin@example.com",
+                "first_name": "Central",
+                "last_name": "Admin",
+                "is_staff": True,
+                "is_superuser": True,
+            }
+        )
+
+        assert user.role == CustomUser.UserRole.MANAGER
+        assert user.is_staff is True
+        assert user.is_superuser is True
 
 # A small but valid 10×10 PNG encoded as base64 data-URI.
 IMG_B64 = (

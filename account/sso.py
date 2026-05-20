@@ -48,6 +48,8 @@ class SSOExchangeView(APIView):
         email = str(claims["email"]).strip().lower()
         first_name = claims.get("first_name") or ""
         last_name = claims.get("last_name") or ""
+        central_is_superuser = bool(claims.get("is_superuser"))
+        central_is_staff = bool(claims.get("is_staff") or central_is_superuser)
 
         with transaction.atomic():
             user = CustomUser.objects.filter(sso_subject=sso_subject).first()
@@ -55,16 +57,41 @@ class SSOExchangeView(APIView):
                 user = CustomUser.objects.filter(email=email).first()
             if user is None:
                 user = CustomUser(email=email, is_active=True)
-                user.role = CustomUser.UserRole.DESIGNER
+                user.role = (
+                    CustomUser.UserRole.MANAGER
+                    if central_is_staff
+                    else CustomUser.UserRole.DESIGNER
+                )
                 user.set_unusable_password()
 
             user.sso_subject = sso_subject
             user.email = email
             user.first_name = first_name
             user.last_name = last_name
+            if central_is_staff:
+                user.is_staff = True
+            if central_is_superuser:
+                user.is_superuser = True
             user.default_password_set = False
             user.save()
             return user
+
+    @staticmethod
+    def _serialize_user(user):
+        return {
+            "pk": user.pk,
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "role": user.role,
+            "is_staff": user.is_staff,
+            "is_superuser": user.is_superuser,
+            "can_view": user.can_view,
+            "can_print": user.can_print,
+            "can_create": user.can_create,
+            "can_edit": user.can_edit,
+            "can_delete": user.can_delete,
+        }
 
     @staticmethod
     def post(request, *args, **kwargs):
@@ -85,12 +112,7 @@ class SSOExchangeView(APIView):
         now = timezone.now()
         return Response(
             {
-                "user": {
-                    "pk": user.pk,
-                    "email": user.email,
-                    "first_name": user.first_name,
-                    "last_name": user.last_name,
-                },
+                "user": SSOExchangeView._serialize_user(user),
                 "access": str(access),
                 "refresh": str(refresh),
                 "access_expiration": (
