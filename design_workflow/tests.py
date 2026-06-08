@@ -392,6 +392,37 @@ class TestPremiumBoardViews:
         result_types = {item["type"] for item in response.data}
         assert {"task", "project", "file", "chat"}.issubset(result_types)
 
+    def test_workspace_search_can_match_tasks_by_assignee(self):
+        manager = make_manager("manager-search-assignee@test.com")
+        designer = make_designer("nadia.assignee@test.com")
+        designer.first_name = "Nadia"
+        designer.last_name = "Bennani"
+        designer.save(update_fields=["first_name", "last_name"])
+        project = Project.objects.create(
+            name="Quiet showroom",
+            description="Neutral context",
+            manager=manager,
+            priority=Priority.MEDIUM,
+            status=ProjectStatus.ACTIVE,
+        )
+        task = Task.objects.create(
+            project=project,
+            title="Palette layout",
+            description="Surface selection",
+            current_assignee=designer,
+            status=TaskStatus.TODO,
+            priority=Priority.MEDIUM,
+            created_by=manager,
+            updated_by=manager,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=manager)
+        response = client.get("/api/design-workflow/search/?q=nadia&types=task")
+
+        assert response.status_code == 200
+        assert [item["id"] for item in response.data if item["type"] == "task"] == [task.id]
+
     def test_workspace_search_scopes_designer_results_to_accessible_work(self):
         manager = make_manager("manager-search-scope@test.com")
         designer = make_designer("designer-search-scope@test.com")

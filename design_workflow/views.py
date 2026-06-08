@@ -13,9 +13,9 @@ from rest_framework import parsers, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .filters import TaskFilter
 from .models import (
     ArtifactApprovalState,
-    AttachmentAnnotation,
     ChatMessage,
     ChatMessageAttachment,
     ChatMessageEdit,
@@ -33,7 +33,6 @@ from .models import (
     Task,
     TaskActivityType,
     TaskAttachment,
-    TaskArtifactVersion,
     TaskChecklist,
     TaskChecklistItem,
     TaskComment,
@@ -193,42 +192,7 @@ def get_task_detail_queryset():
 
 
 def apply_task_filters(queryset, params, user):
-    archived = parse_bool(params.get("archived"))
-    queryset = queryset.filter(archived=False) if archived is None else queryset.filter(archived=archived)
-    if params.get("project"):
-        queryset = queryset.filter(project_id=params.get("project"))
-    if params.get("assignee"):
-        queryset = queryset.filter(current_assignee_id=params.get("assignee"))
-    if params.get("status"):
-        queryset = queryset.filter(status=params.get("status"))
-    if params.get("priority"):
-        queryset = queryset.filter(priority=params.get("priority"))
-    if params.get("review_state"):
-        queryset = queryset.filter(review_state=params.get("review_state"))
-    if params.get("label"):
-        queryset = queryset.filter(labels__id=params.get("label"))
-    query = (params.get("q") or "").strip()
-    if query:
-        queryset = queryset.filter(
-            Q(title__icontains=query)
-            | Q(description__icontains=query)
-            | Q(project__name__icontains=query)
-            | Q(current_assignee__first_name__icontains=query)
-            | Q(current_assignee__last_name__icontains=query)
-            | Q(current_assignee__email__icontains=query)
-            | Q(labels__name__icontains=query)
-        ).distinct()
-    if parse_bool(params.get("overdue")) is True:
-        queryset = queryset.filter(due_date__lt=timezone.localdate()).exclude(status=TaskStatus.DONE)
-    if parse_bool(params.get("blocked")) is True:
-        queryset = queryset.filter(status=TaskStatus.BLOCKED)
-    if parse_bool(params.get("mine")) is True:
-        queryset = queryset.filter(current_assignee=user)
-    if params.get("start_date"):
-        queryset = queryset.filter(project__start_date__gte=params.get("start_date"))
-    if params.get("end_date"):
-        queryset = queryset.filter(project__target_end_date__lte=params.get("end_date"))
-    return queryset
+    return TaskFilter(params, queryset=queryset, user=user).qs
 
 
 def apply_task_sorting(queryset, params):
@@ -531,12 +495,7 @@ class WorkspaceSearchView(APIView):
                 get_accessible_task_queryset(request.user, get_task_queryset()),
                 request.query_params,
                 request.user,
-            ).filter(
-                Q(title__icontains=query)
-                | Q(description__icontains=query)
-                | Q(project__name__icontains=query)
-                | Q(labels__name__icontains=query)
-            ).distinct()[:10]
+            )[:10]
             results.extend(
                 {
                     "type": "task",
