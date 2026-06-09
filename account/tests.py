@@ -1841,7 +1841,9 @@ class TestAccountAdditionalCoverage:
         self.user.password_reset_code = "1234"
         self.user.task_id_password_reset = "task-win"
         self.user.save()
-        with patch("account.views.current_app") as mock_celery:
+        with patch("account.views.platform", "win32"), patch(
+            "account.views.current_app"
+        ) as mock_celery:
             resp = self.client.put(
                 reverse("account:password_reset"),
                 {
