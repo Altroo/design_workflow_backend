@@ -41,6 +41,12 @@ python manage.py runserver 8004
 python -m pytest
 ```
 
-## Screenshot
+## Screenshots
+
+Sanitized product workspace:
+
+![Design Workflow product workspace](docs/screenshots/design-workflow-showcase.png)
+
+Authentication screen:
 
 ![Design Workflow login](docs/screenshots/design-workflow-login.png)
