@@ -3,6 +3,7 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Q, Sum
 from django.utils import timezone
+from simple_history.models import HistoricalRecords
 
 
 class TimestampedModel(models.Model):
@@ -125,6 +126,7 @@ class Project(TimestampedModel):
     )
     archived = models.BooleanField(default=False, db_index=True)
     archived_at = models.DateTimeField(null=True, blank=True)
+    history = HistoricalRecords()
 
     class Meta:
         ordering = ("-created_at",)
@@ -145,6 +147,7 @@ class Project(TimestampedModel):
 class TaskLabel(TimestampedModel):
     name = models.CharField(max_length=80, unique=True)
     color = models.CharField(max_length=16, default="#111827")
+    history = HistoricalRecords()
 
     class Meta:
         ordering = ("name",)
@@ -176,6 +179,7 @@ class SavedView(TimestampedModel):
     collapsed_lanes = models.JSONField(default=list, blank=True)
     show_archived = models.BooleanField(default=False)
     is_default = models.BooleanField(default=False, db_index=True)
+    history = HistoricalRecords()
 
     class Meta:
         ordering = ("-is_default", "name")
@@ -269,6 +273,7 @@ class Task(TimestampedModel):
         blank=True,
         related_name="created_tasks",
     )
+    history = HistoricalRecords()
 
     class Meta:
         ordering = ("project_id", "sort_order", "-created_at")
@@ -324,6 +329,7 @@ class TaskChecklistItem(TimestampedModel):
         related_name="completed_task_checklist_items",
     )
     completed_at = models.DateTimeField(null=True, blank=True)
+    history = HistoricalRecords()
 
     class Meta:
         ordering = ("sort_order", "created_at")
@@ -341,6 +347,7 @@ class TaskChecklist(TimestampedModel):
         on_delete=models.PROTECT,
         related_name="created_task_checklists",
     )
+    history = HistoricalRecords()
 
     class Meta:
         ordering = ("sort_order", "created_at")
@@ -360,6 +367,7 @@ class TaskAttachment(TimestampedModel):
     name = models.CharField(max_length=255)
     mime_type = models.CharField(max_length=120, blank=True)
     size = models.PositiveIntegerField(default=0)
+    history = HistoricalRecords()
 
     class Meta:
         ordering = ("-created_at",)
@@ -398,6 +406,7 @@ class TaskArtifactVersion(TimestampedModel):
         related_name="approved_design_artifact_versions",
     )
     approved_at = models.DateTimeField(null=True, blank=True)
+    history = HistoricalRecords()
 
     class Meta:
         ordering = ("-version_number", "-created_at")
@@ -446,6 +455,7 @@ class AttachmentAnnotation(TimestampedModel):
         related_name="resolved_design_attachment_annotations",
     )
     resolved_at = models.DateTimeField(null=True, blank=True)
+    history = HistoricalRecords()
 
     class Meta:
         ordering = ("created_at",)
@@ -467,6 +477,7 @@ class TimeEntry(TimestampedModel):
     minutes = models.PositiveIntegerField()
     work_date = models.DateField(default=timezone.localdate)
     note = models.TextField(blank=True)
+    history = HistoricalRecords()
 
     class Meta:
         ordering = ("-work_date", "-created_at")
@@ -492,6 +503,7 @@ class TaskComment(TimestampedModel):
         related_name="task_comments",
     )
     body = models.TextField()
+    history = HistoricalRecords()
 
     class Meta:
         ordering = ("created_at",)
@@ -509,6 +521,7 @@ class TaskActivity(models.Model):
     action_type = models.CharField(max_length=32, choices=TaskActivityType.choices)
     metadata = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    history = HistoricalRecords()
 
     class Meta:
         ordering = ("-created_at",)
@@ -547,6 +560,7 @@ class Notification(models.Model):
         related_name="acted_design_notifications",
     )
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    history = HistoricalRecords()
 
     class Meta:
         ordering = ("-created_at",)
@@ -571,6 +585,7 @@ class NotificationPreference(TimestampedModel):
         choices=NotificationDigestFrequency.choices,
         default=NotificationDigestFrequency.INSTANT,
     )
+    history = HistoricalRecords()
 
     def __str__(self):
         return f"{self.user_id}:{self.digest_frequency}"
@@ -606,6 +621,7 @@ class ChatThread(TimestampedModel):
         blank=True,
         related_name="design_chat_threads",
     )
+    history = HistoricalRecords()
 
     class Meta:
         ordering = ("-updated_at",)
@@ -679,6 +695,7 @@ class ChatMessage(TimestampedModel):
         related_name="decision_design_chat_messages",
     )
     decision_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    history = HistoricalRecords()
 
     class Meta:
         ordering = ("created_at",)
@@ -700,6 +717,7 @@ class ChatMessageAttachment(TimestampedModel):
     name = models.CharField(max_length=255)
     mime_type = models.CharField(max_length=120, blank=True)
     size = models.PositiveIntegerField(default=0)
+    history = HistoricalRecords()
 
     class Meta:
         ordering = ("created_at",)
@@ -719,6 +737,7 @@ class ChatMessageEdit(TimestampedModel):
     )
     previous_body = models.TextField(blank=True)
     new_body = models.TextField(blank=True)
+    history = HistoricalRecords()
 
     class Meta:
         ordering = ("-created_at",)
@@ -735,6 +754,7 @@ class ChatMessageReaction(TimestampedModel):
         related_name="design_chat_reactions",
     )
     emoji = models.CharField(max_length=16)
+    history = HistoricalRecords()
 
     class Meta:
         ordering = ("created_at",)
@@ -765,6 +785,7 @@ class ChatMessageReminder(TimestampedModel):
     remind_at = models.DateTimeField(null=True, blank=True, db_index=True)
     note = models.CharField(max_length=255, blank=True)
     done_at = models.DateTimeField(null=True, blank=True)
+    history = HistoricalRecords()
 
     class Meta:
         ordering = ("remind_at", "created_at")
