@@ -43,7 +43,7 @@ from design_workflow.models import (
 )
 
 
-DEFAULT_OWNER_EMAIL = "service-it@casadilusso.ma"
+DEFAULT_OWNER_EMAIL = "info@elbouazzatiholding.ma"
 DEFAULT_PASSWORD = "DesignWorkflowBeta!2026"
 
 
