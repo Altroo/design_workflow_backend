@@ -25,6 +25,8 @@ from design_workflow.models import (
     TaskActivityType,
     TaskArtifactVersion,
     TaskAttachment,
+    TaskChecklist,
+    TaskChecklistItem,
     TaskReviewState,
     TaskComment,
     TaskStatus,
@@ -188,6 +190,69 @@ class TestTaskCreation:
         assert task.current_assignee == designer
         assert task.estimated_minutes == 0
         assert response.data["current_assignee"]["id"] == designer.id
+
+
+class TestTaskChecklists:
+    def test_manager_can_delete_checklist_group_with_items(self):
+        manager = make_manager("manager-checklist-delete@test.com")
+        designer = make_designer("designer-checklist-delete@test.com")
+        project = Project.objects.create(
+            name="Checklist controls",
+            description="Task detail checklist management",
+            manager=manager,
+            priority=Priority.MEDIUM,
+            status=ProjectStatus.ACTIVE,
+        )
+        task = Task.objects.create(
+            project=project,
+            title="Final delivery checklist",
+            current_assignee=designer,
+            status=TaskStatus.TODO,
+            priority=Priority.MEDIUM,
+            created_by=manager,
+            updated_by=manager,
+        )
+        checklist = TaskChecklist.objects.create(task=task, title="Final delivery checklist", created_by=manager)
+        TaskChecklistItem.objects.create(task=task, checklist=checklist, title="Confirm handoff", created_by=manager)
+
+        client = APIClient()
+        client.force_authenticate(user=manager)
+        response = client.delete(f"/api/design-workflow/tasks/{task.id}/checklists/{checklist.id}/")
+
+        assert response.status_code == 204
+        assert not TaskChecklist.objects.filter(pk=checklist.id).exists()
+        assert task.checklist_items.count() == 0
+        activity = TaskActivity.objects.filter(task=task, action_type=TaskActivityType.CHECKLIST_UPDATED).latest("created_at")
+        assert activity.metadata["action"] == "deleted"
+
+    def test_unassigned_designer_cannot_delete_checklist_group(self):
+        manager = make_manager("manager-checklist-denied@test.com")
+        designer = make_designer("designer-checklist-denied@test.com")
+        project_owner = make_designer("project-owner-checklist-denied@test.com")
+        project = Project.objects.create(
+            name="Checklist permissions",
+            description="Task detail checklist permissions",
+            manager=project_owner,
+            priority=Priority.MEDIUM,
+            status=ProjectStatus.ACTIVE,
+        )
+        task = Task.objects.create(
+            project=project,
+            title="Locked checklist",
+            current_assignee=designer,
+            status=TaskStatus.TODO,
+            priority=Priority.MEDIUM,
+            created_by=manager,
+            updated_by=manager,
+        )
+        checklist = TaskChecklist.objects.create(task=task, title="Locked checklist", created_by=manager)
+
+        client = APIClient()
+        client.force_authenticate(user=project_owner)
+        response = client.delete(f"/api/design-workflow/tasks/{task.id}/checklists/{checklist.id}/")
+
+        assert response.status_code == 403
+        assert TaskChecklist.objects.filter(pk=checklist.id).exists()
 
 
 class TestTaskWorkDayAutomation:

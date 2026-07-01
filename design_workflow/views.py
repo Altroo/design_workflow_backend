@@ -1019,6 +1019,32 @@ class TaskChecklistGroupListView(APIView):
         return Response(TaskChecklistSerializer(checklist).data, status=status.HTTP_201_CREATED)
 
 
+class TaskChecklistGroupDetailView(APIView):
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get_object(self, request, pk: int, checklist_id: int):
+        task = get_task_or_404(pk, request.user)
+        try:
+            return task, task.checklists.get(pk=checklist_id)
+        except TaskChecklist.DoesNotExist as exc:
+            raise Http404 from exc
+
+    def delete(self, request, pk: int, checklist_id: int):
+        task, checklist = self.get_object(request, pk, checklist_id)
+        if not can_mutate_task(request.user, task):
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        item_count = checklist.items.count()
+        checklist.delete()
+        record_task_activity(
+            task,
+            request.user,
+            TaskActivityType.CHECKLIST_UPDATED,
+            {"checklist_id": checklist_id, "item_count": item_count, "action": "deleted"},
+        )
+        broadcast_task_event(task, "checklist_updated", recipients=related_task_user_ids(task))
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 class TaskChecklistListView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
