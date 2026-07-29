@@ -26,6 +26,8 @@ def merge_duplicate_public_chat_threads(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
+    atomic = False
+
     dependencies = [
         ("design_workflow", "0012_historicalattachmentannotation_historicalchatmessage_and_more"),
     ]
@@ -34,6 +36,7 @@ class Migration(migrations.Migration):
         migrations.RunPython(
             merge_duplicate_public_chat_threads,
             migrations.RunPython.noop,
+            atomic=True,
         ),
         migrations.AddConstraint(
             model_name="chatthread",
