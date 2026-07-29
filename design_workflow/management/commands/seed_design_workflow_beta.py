@@ -828,14 +828,10 @@ def seed_chat(*, projects: dict, tasks: dict, users: dict, now):
 
 
 def get_or_create_public_thread(*, users: dict):
-    thread = ChatThread.objects.filter(
+    thread, _ = ChatThread.objects.get_or_create(
         kind=ChatThreadKind.PUBLIC,
-        title="Canal public",
-        project__isnull=True,
-        task__isnull=True,
-    ).first()
-    if not thread:
-        thread = ChatThread.objects.create(kind=ChatThreadKind.PUBLIC, title="Canal public")
+        defaults={"title": "Canal public"},
+    )
     thread.participants.add(*users.values())
     return thread
 

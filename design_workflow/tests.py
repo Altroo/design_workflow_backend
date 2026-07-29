@@ -3,6 +3,7 @@ from datetime import timedelta
 import pytest
 from django.contrib.auth import get_user_model
 from django.core import mail
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -618,6 +619,12 @@ class TestWorkflowAccessContracts:
 
 
 class TestLinkedChatWorkflow:
+    def test_public_chat_thread_is_unique(self):
+        ChatThread.objects.create(kind=ChatThreadKind.PUBLIC, title="Studio public")
+
+        with pytest.raises(IntegrityError), transaction.atomic():
+            ChatThread.objects.create(kind=ChatThreadKind.PUBLIC, title="Duplicate public")
+
     def test_project_and_task_threads_are_accessible_to_work_context_users(self):
         manager = make_manager("manager-linked-chat@test.com")
         designer = make_designer("designer-linked-chat@test.com")

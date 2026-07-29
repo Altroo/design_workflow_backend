@@ -631,6 +631,11 @@ class ChatThread(TimestampedModel):
         )
         constraints = (
             models.UniqueConstraint(
+                fields=("kind",),
+                condition=Q(kind=ChatThreadKind.PUBLIC),
+                name="unique_design_public_chat_thread",
+            ),
+            models.UniqueConstraint(
                 fields=("kind", "project"),
                 condition=Q(kind=ChatThreadKind.PROJECT, project__isnull=False),
                 name="unique_design_project_chat_thread",
