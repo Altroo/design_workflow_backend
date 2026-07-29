@@ -1,16 +1,24 @@
 import pytest
 from channels.db import database_sync_to_async
+from channels_redis.core import RedisChannelLayer
 from channels.testing import WebsocketCommunicator
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
 from rest_framework_simplejwt.tokens import AccessToken
 from unittest.mock import AsyncMock, MagicMock
 
+from design_workflow_backend import settings as production_settings
 from design_workflow_backend.asgi import application
 from ws.jwt_middleware import (
     SimpleJwtTokenAuthMiddleware,
     simplejwttokenauthmiddlewarestack,
 )
+
+
+def test_redis_socket_timeout_exceeds_channel_blocking_timeout():
+    redis_host = production_settings.CHANNEL_LAYERS["default"]["CONFIG"]["hosts"][0]
+
+    assert redis_host["socket_timeout"] > RedisChannelLayer.brpop_timeout
 
 
 @pytest.mark.asyncio
