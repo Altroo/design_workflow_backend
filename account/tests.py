@@ -547,7 +547,10 @@ class TestAccountAPIExtras:
 
 
 def test_send_email_task_updates_user_and_sends_mail():
-    assert app_settings.EMAIL_BACKEND == "django.core.mail.backends.locmem.EmailBackend"
+    assert (
+        app_settings.MAILERS["default"]["BACKEND"]
+        == "django.core.mail.backends.locmem.EmailBackend"
+    )
     user = CustomUser.objects.create(email="task_mail@example.com", password="1234")
     send_email.delay(
         user.pk,
@@ -1115,7 +1118,7 @@ class TestTasksExtra:
     def test_send_email_basic(self, mock_cls, user_extra):
         mock_cls.return_value = MagicMock()
         send_email(user_extra.pk, user_extra.email, "Test", "Msg")
-        mock_cls.return_value.send.assert_called_once_with(fail_silently=False)
+        mock_cls.return_value.send.assert_called_once_with()
 
     @patch("account.tasks.EmailMessage")
     def test_send_email_with_reset_code(self, mock_cls, user_extra):

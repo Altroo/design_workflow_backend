@@ -121,13 +121,16 @@ def send_digest_email(user, payload: dict) -> int:
         return 0
     total = payload.get("total_count", 0)
     subject = f"Design Workflow digest: {total} update{'s' if total != 1 else ''}"
-    return send_mail(
-        subject,
-        digest_email_body(payload),
-        None,
-        [user.email],
-        fail_silently=True,
-    )
+    try:
+        return send_mail(
+            subject,
+            digest_email_body(payload),
+            None,
+            [user.email],
+        )
+    except OSError:
+        # A delivery failure must not interrupt notification digest generation.
+        return 0
 
 
 @shared_task
