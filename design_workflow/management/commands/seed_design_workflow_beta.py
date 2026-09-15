@@ -78,7 +78,7 @@ def seed_design_workflow_beta(*, owner_email: str, password: str) -> dict:
         users = seed_users(owner_email=owner_email, password=password)
         owner = users["owner"]
 
-        labels = seed_labels()
+        labels = seed_labels(owner=owner)
         projects = seed_projects(users=users, today=today)
         tasks = seed_tasks(projects=projects, users=users, labels=labels, today=today, now=now)
 
@@ -207,7 +207,7 @@ def ensure_user(
     return user
 
 
-def seed_labels() -> dict:
+def seed_labels(*, owner) -> dict:
     specs = {
         "Beta": "#2563eb",
         "Design review": "#7c3aed",
@@ -218,7 +218,11 @@ def seed_labels() -> dict:
     }
     labels = {}
     for name, color in specs.items():
-        label, _ = TaskLabel.objects.update_or_create(name=name, defaults={"color": color})
+        label, _ = TaskLabel.objects.update_or_create(
+            created_by=owner,
+            name=name,
+            defaults={"color": color},
+        )
         labels[name] = label
     return labels
 

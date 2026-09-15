@@ -470,6 +470,14 @@ class ProfileView(APIView):
 class UsersListCreateView(APIView):
     permission_classes = (permissions.IsAdminUser,)
 
+    def get_permissions(self):
+        permission_class = (
+            permissions.IsAuthenticated
+            if self.request.method == "GET"
+            else permissions.IsAdminUser
+        )
+        return [permission_class()]
+
     @staticmethod
     def generate_random_password(length=8):
         characters = digits + ascii_letters

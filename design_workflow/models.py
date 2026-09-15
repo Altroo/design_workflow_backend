@@ -145,12 +145,23 @@ class Project(TimestampedModel):
 
 
 class TaskLabel(TimestampedModel):
-    name = models.CharField(max_length=80, unique=True)
-    color = models.CharField(max_length=16, default="#111827")
+    name = models.CharField(max_length=80)
+    color = models.CharField(max_length=16, default="#4f46e5")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="design_task_labels",
+    )
     history = HistoricalRecords()
 
     class Meta:
         ordering = ("name",)
+        constraints = (
+            models.UniqueConstraint(
+                fields=("created_by", "name"),
+                name="unique_design_task_label_owner_name",
+            ),
+        )
 
     def __str__(self):
         return self.name

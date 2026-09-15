@@ -98,6 +98,21 @@ class TestSSOExchangeView:
         assert user.is_staff is True
         assert user.is_superuser is True
 
+    def test_sso_keeps_regular_user_without_manager_access(self):
+        user = SSOExchangeView._get_or_create_user(
+            {
+                "sub": "central-user-1",
+                "email": "central-user@example.com",
+                "first_name": "Central",
+                "last_name": "User",
+                "is_staff": False,
+                "is_superuser": False,
+            }
+        )
+
+        assert user.role == CustomUser.UserRole.DESIGNER
+        assert user.is_staff is False
+
 # A small but valid 10×10 PNG encoded as base64 data-URI.
 IMG_B64 = (
     "data:image/png;base64,"
@@ -1224,6 +1239,20 @@ class TestCreateAccountSerializerExtra:
         user = ser.save()
         assert user.avatar and user.avatar.name != ""
 
+    def test_create_preserves_internal_non_manager_role(self):
+        serializer = CreateAccountSerializer(
+            data={
+                "email": "paused-role@example.com",
+                "password": "testpass123",
+                "first_name": "Paused",
+                "last_name": "Role",
+                "role": CustomUser.UserRole.DESIGNER,
+            }
+        )
+
+        assert serializer.is_valid(), serializer.errors
+        assert serializer.save().role == CustomUser.UserRole.DESIGNER
+
     def test_create_with_cropped_saves_file(self):
         ser = CreateAccountSerializer(
             data={
@@ -1553,6 +1582,42 @@ class TestAccountViewsExtra:
         resp = self.client.get(url)
         assert resp.status_code == 200
         assert isinstance(resp.data, list)
+
+    def test_regular_user_can_read_users_for_workflow_assignment(self):
+        regular_user = CustomUser.objects.create_user(
+            email="workflow-member@test.com",
+            password="testpass123",
+            first_name="Workflow",
+            last_name="Member",
+            is_staff=False,
+        )
+        self.client.force_authenticate(user=regular_user)
+
+        response = self.client.get(reverse("account:users"))
+
+        assert response.status_code == 200
+        assert any(item["id"] == self.user.id for item in response.data)
+
+    def test_regular_user_cannot_create_an_account(self):
+        regular_user = CustomUser.objects.create_user(
+            email="workflow-member-create@test.com",
+            password="testpass123",
+            is_staff=False,
+        )
+        self.client.force_authenticate(user=regular_user)
+
+        response = self.client.post(
+            reverse("account:users"),
+            {
+                "email": "forbidden-create@test.com",
+                "first_name": "Forbidden",
+                "last_name": "Create",
+            },
+            format="json",
+        )
+
+        assert response.status_code == 403
+        assert not CustomUser.objects.filter(email="forbidden-create@test.com").exists()
 
     def test_users_list_with_pagination(self):
         url = reverse("account:users") + "?pagination=true"

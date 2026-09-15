@@ -72,11 +72,11 @@ class TaskFilter(django_filters.FilterSet):
             | Q(current_assignee__first_name__icontains=query)
             | Q(current_assignee__last_name__icontains=query)
             | Q(current_assignee__email__icontains=query)
-            | Q(labels__name__icontains=query)
+            | Q(labels__name__icontains=query, labels__created_by=self.user)
         ).distinct()
 
     def filter_label(self, queryset, name, value):
-        return queryset.filter(labels__id=value)
+        return queryset.filter(labels__id=value, labels__created_by=self.user)
 
     def filter_overdue(self, queryset, name, value):
         if _parse_bool(value) is True:

@@ -41,7 +41,7 @@ from .models import (
     TaskStatus,
     TimeEntry,
 )
-from .permissions import IsManager, IsManagerOrReadOnly, can_mutate_task
+from .permissions import IsManager, can_mutate_task
 from .serializers import (
     ChatMessageCreateSerializer,
     ChatMessageDecisionSerializer,
@@ -90,6 +90,7 @@ from .serializers import (
 )
 from .services import (
     WORK_DAY_MINUTES,
+    WORK_WEEK_MINUTES,
     broadcast_task_event,
     create_notification,
     mark_notification_read,
@@ -644,7 +645,7 @@ class DashboardSummaryView(APIView):
 
 
 class ProjectListCreateView(APIView):
-    permission_classes = (IsManagerOrReadOnly,)
+    permission_classes = (permissions.IsAuthenticated,)
 
     def get(self, request):
         queryset = get_accessible_project_queryset(
@@ -666,7 +667,7 @@ class ProjectListCreateView(APIView):
 
 
 class ProjectDetailView(APIView):
-    permission_classes = (IsManagerOrReadOnly,)
+    permission_classes = (permissions.IsAuthenticated,)
 
     @staticmethod
     def get_object(pk: int) -> Project:
@@ -683,6 +684,8 @@ class ProjectDetailView(APIView):
 
     def patch(self, request, pk: int):
         project = self.get_object(pk)
+        if not is_manager_user(request.user) and project.manager_id != request.user.id:
+            return Response(status=status.HTTP_403_FORBIDDEN)
         was_archived = project.archived
         serializer = ProjectWriteSerializer(project, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
@@ -730,10 +733,7 @@ class TaskListCreateView(APIView):
 
     def post(self, request):
         data = request.data.copy()
-        if request.user.role != "manager":
-            data["current_assignee_id"] = request.user.id
-            data.pop("estimated_minutes", None)
-        serializer = TaskWriteSerializer(data=data)
+        serializer = TaskWriteSerializer(data=data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         source_message = serializer.validated_data.get("source_chat_message")
         if source_message and (source_message.deleted_at or not can_access_chat_thread(request.user, source_message.thread)):
@@ -765,8 +765,6 @@ class TaskDetailView(APIView):
         return Response(TaskDetailSerializer(get_task_or_404(pk, request.user), context={"request": request}).data, status=status.HTTP_200_OK)
 
     def patch(self, request, pk: int):
-        if request.user.role != "manager":
-            return Response(status=status.HTTP_403_FORBIDDEN)
         task = get_task_or_404(pk, request.user)
         previous = {
             "status": task.status,
@@ -775,7 +773,12 @@ class TaskDetailView(APIView):
             "assignee_id": task.current_assignee_id,
             "label_ids": list(task.labels.values_list("id", flat=True)),
         }
-        serializer = TaskWriteSerializer(task, data=request.data, partial=True)
+        serializer = TaskWriteSerializer(
+            task,
+            data=request.data,
+            partial=True,
+            context={"request": request},
+        )
         serializer.is_valid(raise_exception=True)
         source_message = serializer.validated_data.get("source_chat_message")
         if source_message and (source_message.deleted_at or not can_access_chat_thread(request.user, source_message.thread)):
@@ -1002,33 +1005,46 @@ class TaskLabelListCreateView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def get(self, request):
-        return Response(TaskLabelSerializer(TaskLabel.objects.all(), many=True).data, status=status.HTTP_200_OK)
+        labels = TaskLabel.objects.filter(created_by=request.user).select_related("created_by")
+        return Response(
+            TaskLabelSerializer(labels, many=True, context={"request": request}).data,
+            status=status.HTTP_200_OK,
+        )
 
     def post(self, request):
-        if request.user.role != "manager":
-            return Response(status=status.HTTP_403_FORBIDDEN)
-        serializer = TaskLabelSerializer(data=request.data)
+        serializer = TaskLabelSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
-        label = serializer.save()
-        return Response(TaskLabelSerializer(label).data, status=status.HTTP_201_CREATED)
+        label = serializer.save(created_by=request.user)
+        return Response(
+            TaskLabelSerializer(label, context={"request": request}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class TaskLabelDetailView(APIView):
-    permission_classes = (IsManager,)
+    permission_classes = (permissions.IsAuthenticated,)
 
     @staticmethod
-    def get_object(pk: int) -> TaskLabel:
+    def get_object(pk: int, user) -> TaskLabel:
         try:
-            return TaskLabel.objects.get(pk=pk)
+            return TaskLabel.objects.select_related("created_by").get(pk=pk, created_by=user)
         except TaskLabel.DoesNotExist as exc:
             raise Http404 from exc
 
     def patch(self, request, pk: int):
-        label = self.get_object(pk)
-        serializer = TaskLabelSerializer(label, data=request.data, partial=True)
+        label = self.get_object(pk, request.user)
+        serializer = TaskLabelSerializer(
+            label,
+            data=request.data,
+            partial=True,
+            context={"request": request},
+        )
         serializer.is_valid(raise_exception=True)
         label = serializer.save()
-        return Response(TaskLabelSerializer(label).data, status=status.HTTP_200_OK)
+        return Response(
+            TaskLabelSerializer(label, context={"request": request}).data,
+            status=status.HTTP_200_OK,
+        )
 
 
 def ensure_default_checklist(task: Task, user) -> TaskChecklist:
@@ -1233,6 +1249,14 @@ class TaskReviewView(APIView):
         serializer.is_valid(raise_exception=True)
         previous_state = task.review_state
         next_state = serializer.validated_data["review_state"]
+        if previous_state == next_state:
+            return Response(
+                TaskDetailSerializer(
+                    get_task_detail_queryset().get(pk=task.pk),
+                    context={"request": request},
+                ).data,
+                status=status.HTTP_200_OK,
+            )
         task.review_state = next_state
         update_fields = ["review_state", "updated_by", "updated_at"]
         task.updated_by = request.user
@@ -1444,12 +1468,22 @@ class TimeReportView(APIView):
     permission_classes = (IsManager,)
 
     def get(self, request):
-        queryset = Project.objects.select_related("manager").annotate(minutes=Sum("tasks__time_entries__minutes", filter=Q(tasks__archived=False)))
+        entry_filter = Q(tasks__archived=False)
         if request.query_params.get("start_date"):
-            queryset = queryset.filter(tasks__time_entries__work_date__gte=request.query_params.get("start_date"))
+            entry_filter &= Q(tasks__time_entries__work_date__gte=request.query_params.get("start_date"))
         if request.query_params.get("end_date"):
-            queryset = queryset.filter(tasks__time_entries__work_date__lte=request.query_params.get("end_date"))
-        rows = [{"project": project, "minutes": int(project.minutes or 0)} for project in queryset.distinct()]
+            entry_filter &= Q(tasks__time_entries__work_date__lte=request.query_params.get("end_date"))
+        if request.query_params.get("user"):
+            entry_filter &= Q(tasks__time_entries__user_id=request.query_params.get("user"))
+        queryset = Project.objects.select_related("manager").annotate(
+            minutes=Sum("tasks__time_entries__minutes", filter=entry_filter)
+        )
+        if request.query_params.get("project"):
+            queryset = queryset.filter(pk=request.query_params.get("project"))
+        rows = [
+            {"project": project, "minutes": int(project.minutes or 0)}
+            for project in queryset.filter(minutes__gt=0)
+        ]
         return Response(TimeReportRowSerializer(rows, many=True).data, status=status.HTTP_200_OK)
 
 
@@ -1469,6 +1503,10 @@ class WorkflowAnalyticsReportView(APIView):
             queryset = queryset.filter(created_at__date__gte=request.query_params.get("start_date"))
         if request.query_params.get("end_date"):
             queryset = queryset.filter(created_at__date__lte=request.query_params.get("end_date"))
+        if request.query_params.get("project"):
+            queryset = queryset.filter(project_id=request.query_params.get("project"))
+        if request.query_params.get("user"):
+            queryset = queryset.filter(current_assignee_id=request.query_params.get("user"))
 
         tasks = list(queryset)
         now = timezone.now()
@@ -1513,7 +1551,7 @@ class WorkflowAnalyticsReportView(APIView):
                     "open_tasks": 0,
                     "overdue_tasks": 0,
                     "remaining_minutes": 0,
-                    "capacity_minutes": WORK_DAY_MINUTES * 5,
+                    "capacity_minutes": WORK_WEEK_MINUTES,
                 },
             )
             row["open_tasks"] += 1

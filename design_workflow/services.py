@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
@@ -9,7 +9,17 @@ from django.utils import timezone
 from .models import Notification, TaskActivity, TaskActivityType, TaskStatus, TimeEntry
 
 User = get_user_model()
-WORK_DAY_MINUTES = 9 * 60
+WORK_DAY_MINUTES = 8 * 60
+SATURDAY_WORK_MINUTES = 4 * 60
+WORK_WEEK_MINUTES = (WORK_DAY_MINUTES * 5) + SATURDAY_WORK_MINUTES
+WORK_SCHEDULE = {
+    **{
+        weekday: ((time(9), time(13)), (time(14), time(18)))
+        for weekday in range(5)
+    },
+    5: ((time(9), time(13)),),
+    6: (),
+}
 
 
 def broadcast_to_users(user_ids: list[int], message: dict) -> None:
@@ -78,19 +88,25 @@ def log_automatic_time_entry(
     return time_entry
 
 
-def count_business_days(start, end) -> int:
-    start_date = timezone.localtime(start).date()
-    end_date = timezone.localtime(end).date()
-    if end_date < start_date:
-        return 1
+def count_working_minutes(start, end) -> int:
+    """Count only scheduled studio time between two aware datetimes."""
+    local_start = timezone.localtime(start)
+    local_end = timezone.localtime(end)
+    if local_end <= local_start:
+        return 0
 
-    days = 0
-    current = start_date
-    while current <= end_date:
-        if current.weekday() < 5:
-            days += 1
-        current += timedelta(days=1)
-    return max(days, 1)
+    total_minutes = 0
+    current_date = local_start.date()
+    while current_date <= local_end.date():
+        for window_start, window_end in WORK_SCHEDULE[current_date.weekday()]:
+            starts_at = datetime.combine(current_date, window_start, tzinfo=local_start.tzinfo)
+            ends_at = datetime.combine(current_date, window_end, tzinfo=local_start.tzinfo)
+            overlap_start = max(local_start, starts_at)
+            overlap_end = min(local_end, ends_at)
+            if overlap_end > overlap_start:
+                total_minutes += int((overlap_end - overlap_start).total_seconds() // 60)
+        current_date += timedelta(days=1)
+    return total_minutes
 
 
 def sync_task_work_session(task, *, user, previous_status: str, next_status: str, event: str):
@@ -107,14 +123,14 @@ def sync_task_work_session(task, *, user, previous_status: str, next_status: str
         if task.work_started_at is None:
             return None
         closed_at = timezone.now()
-        work_days = count_business_days(task.work_started_at, closed_at)
+        worked_minutes = count_working_minutes(task.work_started_at, closed_at)
         task.work_started_at = None
         task.save(update_fields=["work_started_at", "updated_at"])
         return log_automatic_time_entry(
             task,
             user=user,
-            minutes=work_days * WORK_DAY_MINUTES,
-            note=f"Automatic workflow entry: {work_days} work day(s) while task was in progress.",
+            minutes=worked_minutes,
+            note="Automatic workflow entry based on scheduled studio hours.",
             event=event,
         )
 
@@ -183,4 +199,3 @@ def related_task_user_ids(task) -> list[int]:
     ids.extend(commenter_ids)
     ids.extend(time_logger_ids)
     return [user_id for user_id in set(ids) if user_id]
-

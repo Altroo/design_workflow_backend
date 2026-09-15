@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -35,6 +35,7 @@ from design_workflow.models import (
     TimeEntry,
 )
 from design_workflow.tasks import generate_notification_digests
+from design_workflow.services import count_working_minutes
 
 User = get_user_model()
 
@@ -306,7 +307,7 @@ class TestProjectArchiving:
 class TestTaskLabelManagement:
     def test_manager_can_update_label(self):
         manager = make_manager("manager-label-update@test.com")
-        label = TaskLabel.objects.create(name="Old label", color="#64748b")
+        label = TaskLabel.objects.create(name="Old label", color="#64748b", created_by=manager)
         client = APIClient()
         client.force_authenticate(user=manager)
 
@@ -321,9 +322,10 @@ class TestTaskLabelManagement:
         assert label.name == "Client review"
         assert label.color == "#4f46e5"
 
-    def test_designer_cannot_update_label(self):
+    def test_user_cannot_update_another_users_label(self):
+        manager = make_manager("manager-label-owner@test.com")
         designer = make_designer("designer-label-update@test.com")
-        label = TaskLabel.objects.create(name="Protected label", color="#64748b")
+        label = TaskLabel.objects.create(name="Protected label", color="#64748b", created_by=manager)
         client = APIClient()
         client.force_authenticate(user=designer)
 
@@ -333,9 +335,27 @@ class TestTaskLabelManagement:
             format="json",
         )
 
-        assert response.status_code == 403
+        assert response.status_code == 404
         label.refresh_from_db()
         assert label.name == "Protected label"
+
+    def test_labels_are_private_and_names_can_repeat_between_users(self):
+        manager = make_manager("manager-label-private@test.com")
+        designer = make_designer("designer-label-private@test.com")
+        TaskLabel.objects.create(name="Client", color="#4f46e5", created_by=manager)
+        client = APIClient()
+        client.force_authenticate(user=designer)
+
+        created = client.post(
+            "/api/design-workflow/labels/",
+            {"name": "Client", "color": "#0891b2"},
+            format="json",
+        )
+        response = client.get("/api/design-workflow/labels/")
+
+        assert created.status_code == 201
+        assert created.data["created_by"]["id"] == designer.id
+        assert [item["id"] for item in response.data] == [created.data["id"]]
 
 
 class TestChatPrivateThreadRecipients:
@@ -358,7 +378,27 @@ class TestChatPrivateThreadRecipients:
 
 
 class TestTaskCreation:
-    def test_designer_can_create_task_assigned_to_self(self):
+    def test_designer_can_create_a_project(self):
+        designer = make_designer("designer-project-create@test.com")
+        client = APIClient()
+        client.force_authenticate(user=designer)
+
+        response = client.post(
+            "/api/design-workflow/projects/",
+            {
+                "name": "New shared project",
+                "description": "Created without a special workflow role",
+                "manager_id": designer.id,
+                "priority": Priority.MEDIUM,
+                "status": ProjectStatus.PLANNED,
+            },
+            format="json",
+        )
+
+        assert response.status_code == 201
+        assert response.data["manager"]["id"] == designer.id
+
+    def test_designer_can_create_task_for_another_user_with_an_estimate(self):
         manager = make_manager("manager-task-create@test.com")
         designer = make_designer("designer-task-create@test.com")
         other_designer = make_designer("other-designer-task-create@test.com")
@@ -390,9 +430,9 @@ class TestTaskCreation:
         assert response.status_code == 201
         task = Task.objects.get(title="Draft homepage hero")
         assert task.created_by == designer
-        assert task.current_assignee == designer
-        assert task.estimated_minutes == 0
-        assert response.data["current_assignee"]["id"] == designer.id
+        assert task.current_assignee == other_designer
+        assert task.estimated_minutes == 60
+        assert response.data["current_assignee"]["id"] == other_designer.id
 
 
 class TestTaskChecklists:
@@ -492,7 +532,7 @@ class TestTaskWorkDayAutomation:
         assert task.work_started_at is not None
         assert task.time_entries.count() == 0
 
-    def test_leaving_in_progress_logs_one_work_day(self):
+    def test_leaving_in_progress_logs_one_work_day(self, monkeypatch):
         manager = make_manager("manager-work-close@test.com")
         designer = make_designer("designer-work-close@test.com")
         project = Project.objects.create(
@@ -521,6 +561,11 @@ class TestTaskWorkDayAutomation:
         )
         assert response.status_code == 200
 
+        start = timezone.make_aware(datetime(2026, 9, 14, 9, 0))
+        end = timezone.make_aware(datetime(2026, 9, 14, 18, 0))
+        Task.objects.filter(pk=task.pk).update(work_started_at=start)
+        monkeypatch.setattr("design_workflow.services.timezone.now", lambda: end)
+
         response = client.patch(
             f"/api/design-workflow/tasks/{task.id}/status/",
             {"status": TaskStatus.IN_REVIEW},
@@ -530,9 +575,21 @@ class TestTaskWorkDayAutomation:
         assert response.status_code == 200
         task.refresh_from_db()
         assert task.work_started_at is None
-        assert task.actual_minutes == 540
+        assert task.actual_minutes == 480
         assert task.time_entries.count() == 1
-        assert task.time_entries.first().minutes == 540
+        assert task.time_entries.first().minutes == 480
+
+    def test_work_schedule_counts_weekdays_saturday_and_skips_sunday(self):
+        monday = timezone.make_aware(datetime(2026, 9, 14, 9, 0))
+        monday_end = timezone.make_aware(datetime(2026, 9, 14, 18, 0))
+        saturday = timezone.make_aware(datetime(2026, 9, 19, 9, 0))
+        saturday_end = timezone.make_aware(datetime(2026, 9, 19, 13, 0))
+        sunday = timezone.make_aware(datetime(2026, 9, 20, 9, 0))
+        sunday_end = timezone.make_aware(datetime(2026, 9, 20, 18, 0))
+
+        assert count_working_minutes(monday, monday_end) == 480
+        assert count_working_minutes(saturday, saturday_end) == 240
+        assert count_working_minutes(sunday, sunday_end) == 0
 
     def test_designer_cannot_manually_log_time(self):
         manager = make_manager("manager-manual-time@test.com")
@@ -969,6 +1026,17 @@ class TestDesignReviewWorkflow:
         assert task.review_requested_by == designer
         assert Notification.objects.filter(recipient=manager, type=NotificationType.REVIEW_REQUESTED, task=task).exists()
 
+        activity_count = TaskActivity.objects.filter(task=task).count()
+        notification_count = Notification.objects.filter(task=task).count()
+        repeated = client.post(
+            f"/api/design-workflow/tasks/{task.id}/review/",
+            {"review_state": TaskReviewState.NEEDS_REVIEW},
+            format="json",
+        )
+        assert repeated.status_code == 200
+        assert TaskActivity.objects.filter(task=task).count() == activity_count
+        assert Notification.objects.filter(task=task).count() == notification_count
+
         client.force_authenticate(user=manager)
         response = client.post(
             f"/api/design-workflow/tasks/{task.id}/review/",
@@ -1145,6 +1213,46 @@ class TestNotificationActions:
 
 
 class TestWorkflowReports:
+    def test_reports_filter_by_project_and_user(self):
+        manager = make_manager("manager-report-filters@test.com")
+        first_user = make_designer("first-report-user@test.com")
+        second_user = make_designer("second-report-user@test.com")
+        first_project = Project.objects.create(name="First report project", manager=manager)
+        second_project = Project.objects.create(name="Second report project", manager=manager)
+        first_task = Task.objects.create(
+            project=first_project,
+            title="First filtered task",
+            current_assignee=first_user,
+            created_by=manager,
+            updated_by=manager,
+        )
+        second_task = Task.objects.create(
+            project=second_project,
+            title="Second filtered task",
+            current_assignee=second_user,
+            created_by=manager,
+            updated_by=manager,
+        )
+        TimeEntry.objects.create(task=first_task, user=first_user, minutes=120)
+        TimeEntry.objects.create(task=second_task, user=second_user, minutes=90)
+        client = APIClient()
+        client.force_authenticate(user=manager)
+
+        time_response = client.get(
+            f"/api/design-workflow/reports/time/?project={first_project.id}&user={first_user.id}"
+        )
+        workflow_response = client.get(
+            f"/api/design-workflow/reports/workflow/?project={first_project.id}&user={first_user.id}"
+        )
+
+        assert time_response.status_code == 200
+        assert [(row["project"]["id"], row["minutes"]) for row in time_response.data] == [
+            (first_project.id, 120)
+        ]
+        assert workflow_response.status_code == 200
+        assert workflow_response.data["tasks_sampled"] == 1
+        assert workflow_response.data["capacity"][0]["user"]["id"] == first_user.id
+
     def test_workload_report_serializes_users_with_avatar_fallback(self):
         manager = make_manager("manager-workload@test.com")
         designer = make_designer("designer-workload@test.com")

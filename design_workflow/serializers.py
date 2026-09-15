@@ -1,3 +1,5 @@
+import re
+
 from django.contrib.auth import get_user_model
 from django.db.models import Sum
 from django.utils import timezone
@@ -60,9 +62,29 @@ class ProjectSummarySerializer(serializers.ModelSerializer):
 
 
 class TaskLabelSerializer(serializers.ModelSerializer):
+    created_by = UserSummarySerializer(read_only=True)
+
     class Meta:
         model = TaskLabel
-        fields = ("id", "name", "color", "created_at", "updated_at")
+        fields = ("id", "name", "color", "created_by", "created_at", "updated_at")
+
+    def validate_name(self, value):
+        name = value.strip()
+        request = self.context.get("request")
+        if request and request.user.is_authenticated:
+            queryset = TaskLabel.objects.filter(created_by=request.user, name__iexact=name)
+            if self.instance:
+                queryset = queryset.exclude(pk=self.instance.pk)
+            if queryset.exists():
+                raise serializers.ValidationError("You already have a label with this name.")
+        return name
+
+    @staticmethod
+    def validate_color(value):
+        color = value.strip().lower()
+        if not re.fullmatch(r"#[0-9a-f]{6}", color):
+            raise serializers.ValidationError("Use a six-digit hexadecimal color.")
+        return color
 
 
 class SavedViewSerializer(serializers.ModelSerializer):
@@ -147,7 +169,7 @@ class TaskCardSerializer(serializers.ModelSerializer):
     current_assignee = UserSummarySerializer(read_only=True)
     review_requested_by = UserSummarySerializer(read_only=True)
     review_approved_by = UserSummarySerializer(read_only=True)
-    labels = TaskLabelSerializer(many=True, read_only=True)
+    labels = serializers.SerializerMethodField()
     checklists = TaskChecklistSerializer(many=True, read_only=True)
     checklist_items = TaskChecklistItemSerializer(many=True, read_only=True)
     attachments = TaskAttachmentSerializer(many=True, read_only=True)
@@ -184,6 +206,13 @@ class TaskCardSerializer(serializers.ModelSerializer):
             return None
         url = first_image.file.url
         return request.build_absolute_uri(url) if request else url
+
+    def get_labels(self, obj):
+        request = self.context.get("request")
+        labels = obj.labels.all()
+        if request and request.user.is_authenticated:
+            labels = labels.filter(created_by=request.user)
+        return TaskLabelSerializer(labels, many=True, context=self.context).data
 
     def get_source_chat_thread_id(self, obj):
         if not obj.source_chat_message_id:
@@ -487,7 +516,25 @@ class TaskWriteSerializer(serializers.ModelSerializer):
         archived = attrs.get("archived", getattr(self.instance, "archived", False))
         if project and project.archived and not archived:
             raise serializers.ValidationError({"archived": "Unarchive the project before restoring or adding tasks."})
+        labels = attrs.get("labels")
+        request = self.context.get("request")
+        if labels is not None and request and request.user.is_authenticated:
+            if any(label.created_by_id != request.user.id for label in labels):
+                raise serializers.ValidationError({"label_ids": "You can only use labels you created."})
         return attrs
+
+    def update(self, instance, validated_data):
+        labels = validated_data.pop("labels", None)
+        instance = super().update(instance, validated_data)
+        if labels is not None:
+            request = self.context.get("request")
+            other_label_ids = []
+            if request and request.user.is_authenticated:
+                other_label_ids = list(
+                    instance.labels.exclude(created_by=request.user).values_list("id", flat=True)
+                )
+            instance.labels.set([*other_label_ids, *(label.id for label in labels)])
+        return instance
 
 
 class TaskStatusUpdateSerializer(serializers.Serializer):
