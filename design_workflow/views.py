@@ -686,11 +686,31 @@ class ProjectDetailView(APIView):
         was_archived = project.archived
         serializer = ProjectWriteSerializer(project, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
-        project = serializer.save()
-        if project.archived and not was_archived:
-            project.archived_at = timezone.now()
-            project.status = ProjectStatus.ARCHIVED
-            project.save(update_fields=["archived_at", "status", "updated_at"])
+        with transaction.atomic():
+            project = serializer.save()
+            if project.archived and not was_archived:
+                archived_at = timezone.now()
+                project.archived_at = archived_at
+                project.status = ProjectStatus.ARCHIVED
+                project.save(update_fields=["archived_at", "status", "updated_at"])
+                tasks_to_archive = list(project.tasks.select_related("project").filter(archived=False))
+                for task in tasks_to_archive:
+                    task.archived = True
+                    task.archived_at = archived_at
+                    task.updated_by = request.user
+                    task.save(update_fields=["archived", "archived_at", "updated_by", "updated_at"])
+                    record_task_activity(
+                        task,
+                        request.user,
+                        TaskActivityType.PROJECT_ARCHIVED,
+                        {"archived": True, "project_id": project.id},
+                    )
+                    broadcast_task_event(task, "archived", recipients=related_task_user_ids(task))
+            elif was_archived and not project.archived:
+                project.archived_at = None
+                if project.status == ProjectStatus.ARCHIVED:
+                    project.status = ProjectStatus.PLANNED
+                project.save(update_fields=["archived_at", "status", "updated_at"])
         return Response(ProjectSummarySerializer(project).data, status=status.HTTP_200_OK)
 
 
@@ -932,6 +952,11 @@ class TaskArchiveView(APIView):
             return Response(status=status.HTTP_403_FORBIDDEN)
         serializer = TaskArchiveSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        if not serializer.validated_data["archived"] and task.project.archived:
+            return Response(
+                {"archived": ["Unarchive the project before restoring its tasks."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         task.archived = serializer.validated_data["archived"]
         task.archived_at = timezone.now() if task.archived else None
         task.updated_by = request.user
@@ -986,6 +1011,24 @@ class TaskLabelListCreateView(APIView):
         serializer.is_valid(raise_exception=True)
         label = serializer.save()
         return Response(TaskLabelSerializer(label).data, status=status.HTTP_201_CREATED)
+
+
+class TaskLabelDetailView(APIView):
+    permission_classes = (IsManager,)
+
+    @staticmethod
+    def get_object(pk: int) -> TaskLabel:
+        try:
+            return TaskLabel.objects.get(pk=pk)
+        except TaskLabel.DoesNotExist as exc:
+            raise Http404 from exc
+
+    def patch(self, request, pk: int):
+        label = self.get_object(pk)
+        serializer = TaskLabelSerializer(label, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        label = serializer.save()
+        return Response(TaskLabelSerializer(label).data, status=status.HTTP_200_OK)
 
 
 def ensure_default_checklist(task: Task, user) -> TaskChecklist:
@@ -1388,7 +1431,7 @@ class WorkloadView(APIView):
         for user in users:
             assigned_tasks = Task.objects.filter(current_assignee=user, archived=False).exclude(status=TaskStatus.DONE)
             rows.append({
-                "user": UserSummarySerializer(user).data,
+                "user": user,
                 "open_tasks": assigned_tasks.count(),
                 "overdue_tasks": assigned_tasks.filter(due_date__lt=today).count(),
                 "estimated_minutes": int(assigned_tasks.aggregate(total=Sum("estimated_minutes"))["total"] or 0),

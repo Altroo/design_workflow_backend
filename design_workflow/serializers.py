@@ -34,7 +34,11 @@ User = get_user_model()
 
 
 class UserSummarySerializer(serializers.ModelSerializer):
-    avatar = serializers.CharField(source="get_absolute_avatar_cropped_img", read_only=True)
+    avatar = serializers.SerializerMethodField()
+
+    @staticmethod
+    def get_avatar(instance):
+        return instance.get_absolute_avatar_cropped_img or instance.get_absolute_avatar_img
 
     class Meta:
         model = User
@@ -480,6 +484,9 @@ class TaskWriteSerializer(serializers.ModelSerializer):
         project = attrs.get("project", getattr(self.instance, "project", None))
         if due_date and project and project.start_date and due_date < project.start_date:
             raise serializers.ValidationError({"due_date": "Due date cannot be before project start date."})
+        archived = attrs.get("archived", getattr(self.instance, "archived", False))
+        if project and project.archived and not archived:
+            raise serializers.ValidationError({"archived": "Unarchive the project before restoring or adding tasks."})
         return attrs
 
 

@@ -28,6 +28,7 @@ from design_workflow.models import (
     TaskAttachment,
     TaskChecklist,
     TaskChecklistItem,
+    TaskLabel,
     TaskReviewState,
     TaskComment,
     TaskStatus,
@@ -153,6 +154,207 @@ class TestProjectDetailPayload:
         assert response.status_code == 200
         assert response.data["tasks"][0]["id"] == task.id
         assert response.data["recent_activity"][0]["task_title"] == task.title
+
+
+class TestProjectArchiving:
+    def test_manager_archives_project_and_all_related_tasks(self):
+        manager = make_manager("manager-project-archive@test.com")
+        designer = make_designer("designer-project-archive@test.com")
+        project = Project.objects.create(
+            name="Retired showroom project",
+            manager=manager,
+            priority=Priority.HIGH,
+            status=ProjectStatus.ACTIVE,
+        )
+        task = Task.objects.create(
+            project=project,
+            title="Running layout task",
+            current_assignee=designer,
+            status=TaskStatus.IN_PROGRESS,
+            priority=Priority.HIGH,
+            created_by=manager,
+            updated_by=manager,
+        )
+        completed_task = Task.objects.create(
+            project=project,
+            title="Completed layout task",
+            current_assignee=designer,
+            status=TaskStatus.DONE,
+            priority=Priority.MEDIUM,
+            created_by=manager,
+            updated_by=manager,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=manager)
+        response = client.patch(
+            f"/api/design-workflow/projects/{project.id}/",
+            {"archived": True},
+            format="json",
+        )
+
+        assert response.status_code == 200
+        project.refresh_from_db()
+        task.refresh_from_db()
+        completed_task.refresh_from_db()
+        assert project.archived is True
+        assert project.archived_at is not None
+        assert project.status == ProjectStatus.ARCHIVED
+        assert task.archived is True
+        assert completed_task.archived is True
+        assert task.archived_at == project.archived_at
+        assert completed_task.archived_at == project.archived_at
+        assert TaskActivity.objects.filter(
+            task__in=[task, completed_task],
+            action_type=TaskActivityType.PROJECT_ARCHIVED,
+        ).count() == 2
+
+    def test_designer_cannot_archive_project(self):
+        manager = make_manager("manager-project-archive-denied@test.com")
+        designer = make_designer("designer-project-archive-denied@test.com")
+        project = Project.objects.create(
+            name="Protected showroom project",
+            manager=manager,
+            priority=Priority.MEDIUM,
+            status=ProjectStatus.ACTIVE,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=designer)
+        response = client.patch(
+            f"/api/design-workflow/projects/{project.id}/",
+            {"archived": True},
+            format="json",
+        )
+
+        assert response.status_code == 403
+        project.refresh_from_db()
+        assert project.archived is False
+
+    def test_task_cannot_be_restored_until_project_is_unarchived(self):
+        manager = make_manager("manager-project-restore@test.com")
+        project = Project.objects.create(
+            name="Archived showroom project",
+            manager=manager,
+            priority=Priority.HIGH,
+            status=ProjectStatus.ARCHIVED,
+            archived=True,
+            archived_at=timezone.now(),
+        )
+        task = Task.objects.create(
+            project=project,
+            title="Archived layout task",
+            status=TaskStatus.TODO,
+            priority=Priority.HIGH,
+            archived=True,
+            archived_at=timezone.now(),
+            created_by=manager,
+            updated_by=manager,
+        )
+        client = APIClient()
+        client.force_authenticate(user=manager)
+
+        blocked_response = client.post(
+            f"/api/design-workflow/tasks/{task.id}/archive/",
+            {"archived": False},
+            format="json",
+        )
+
+        assert blocked_response.status_code == 400
+        task.refresh_from_db()
+        assert task.archived is True
+
+        project_response = client.patch(
+            f"/api/design-workflow/projects/{project.id}/",
+            {"archived": False},
+            format="json",
+        )
+        assert project_response.status_code == 200
+        project.refresh_from_db()
+        task.refresh_from_db()
+        assert project.archived is False
+        assert project.archived_at is None
+        assert project.status == ProjectStatus.PLANNED
+        assert task.archived is True
+
+        restored_response = client.post(
+            f"/api/design-workflow/tasks/{task.id}/archive/",
+            {"archived": False},
+            format="json",
+        )
+        assert restored_response.status_code == 200
+        task.refresh_from_db()
+        assert task.archived is False
+
+    def test_project_delete_is_not_available(self):
+        manager = make_manager("manager-project-no-delete@test.com")
+        project = Project.objects.create(
+            name="Archive-only project",
+            manager=manager,
+            priority=Priority.MEDIUM,
+            status=ProjectStatus.ACTIVE,
+        )
+        client = APIClient()
+        client.force_authenticate(user=manager)
+
+        response = client.delete(f"/api/design-workflow/projects/{project.id}/")
+
+        assert response.status_code == 405
+        assert Project.objects.filter(id=project.id).exists()
+
+
+class TestTaskLabelManagement:
+    def test_manager_can_update_label(self):
+        manager = make_manager("manager-label-update@test.com")
+        label = TaskLabel.objects.create(name="Old label", color="#64748b")
+        client = APIClient()
+        client.force_authenticate(user=manager)
+
+        response = client.patch(
+            f"/api/design-workflow/labels/{label.id}/",
+            {"name": "Client review", "color": "#4f46e5"},
+            format="json",
+        )
+
+        assert response.status_code == 200
+        label.refresh_from_db()
+        assert label.name == "Client review"
+        assert label.color == "#4f46e5"
+
+    def test_designer_cannot_update_label(self):
+        designer = make_designer("designer-label-update@test.com")
+        label = TaskLabel.objects.create(name="Protected label", color="#64748b")
+        client = APIClient()
+        client.force_authenticate(user=designer)
+
+        response = client.patch(
+            f"/api/design-workflow/labels/{label.id}/",
+            {"name": "Changed"},
+            format="json",
+        )
+
+        assert response.status_code == 403
+        label.refresh_from_db()
+        assert label.name == "Protected label"
+
+
+class TestChatPrivateThreadRecipients:
+    def test_inactive_recipient_cannot_be_added_to_private_thread(self):
+        manager = make_manager("manager-private-recipient@test.com")
+        inactive_user = make_designer("inactive-private-recipient@test.com")
+        inactive_user.is_active = False
+        inactive_user.save(update_fields=["is_active"])
+
+        client = APIClient()
+        client.force_authenticate(user=manager)
+        response = client.post(
+            "/api/design-workflow/chat/threads/",
+            {"kind": "private", "recipient_id": inactive_user.id},
+            format="json",
+        )
+
+        assert response.status_code == 400
+        assert not ChatThread.objects.filter(kind=ChatThreadKind.PRIVATE, participants=inactive_user).exists()
 
 
 class TestTaskCreation:
@@ -943,6 +1145,34 @@ class TestNotificationActions:
 
 
 class TestWorkflowReports:
+    def test_workload_report_serializes_users_with_avatar_fallback(self):
+        manager = make_manager("manager-workload@test.com")
+        designer = make_designer("designer-workload@test.com")
+        project = Project.objects.create(
+            name="Workload project",
+            manager=manager,
+            priority=Priority.MEDIUM,
+            status=ProjectStatus.ACTIVE,
+        )
+        Task.objects.create(
+            project=project,
+            title="Assigned workload",
+            current_assignee=designer,
+            status=TaskStatus.IN_PROGRESS,
+            priority=Priority.MEDIUM,
+            created_by=manager,
+            updated_by=manager,
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=manager)
+        response = client.get("/api/design-workflow/workload/")
+
+        assert response.status_code == 200
+        designer_row = next(row for row in response.data if row["user"]["id"] == designer.id)
+        assert designer_row["user"]["avatar"] is None
+        assert designer_row["open_tasks"] == 1
+
     def test_workflow_analytics_report_includes_time_review_and_capacity_metrics(self):
         manager = make_manager("manager-workflow-report@test.com")
         designer = make_designer("designer-workflow-report@test.com")
