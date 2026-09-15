@@ -541,6 +541,25 @@ class TestAccountAPIExtras:
         assert created.first_name == "New"
         assert created.default_password_set is True
 
+    def test_post_users_create_without_avatar_uses_initials_fallback(self):
+        url = reverse("account:users")
+        payload = {
+            "email": "NOAVATAR@EXAMPLE.COM",
+            "first_name": "No",
+            "last_name": "Avatar",
+            "is_staff": False,
+            "is_active": True,
+            "avatar": "",
+            "avatar_cropped": "",
+        }
+
+        resp = self.auth_client.post(url, payload)
+
+        assert resp.status_code == status.HTTP_204_NO_CONTENT
+        created = self.user_model.objects.get(email="noavatar@example.com")
+        assert not created.avatar
+        assert not created.avatar_cropped
+
     def test_user_detail_get_self_404(self):
         url = reverse("account:users_detail", args=[self.user.pk])
         assert self.auth_client.get(url).status_code == 404

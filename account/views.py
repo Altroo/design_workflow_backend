@@ -44,7 +44,6 @@ from .serializers import (
 from .tasks import (
     send_email,
     start_deleting_expired_codes,
-    generate_user_thumbnail,
 )
 
 logger = logging.getLogger(__name__)
@@ -499,8 +498,6 @@ class UsersListCreateView(APIView):
             return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request):
-        avatar = request.data.get("avatar")
-        avatar_cropped = request.data.get("avatar_cropped")
         password = self.generate_random_password()
 
         data = request.data.copy()
@@ -514,10 +511,6 @@ class UsersListCreateView(APIView):
         )
         if serializer.is_valid():
             user = serializer.save()
-            if avatar == "" or avatar_cropped == "":
-                generate_user_thumbnail.apply_async(
-                    (user.pk,),
-                )
             mail_subject = "Invitation - Application Design Workflow"
             mail_template = "new_account.html"
             message = render_to_string(
