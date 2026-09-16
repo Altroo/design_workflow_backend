@@ -230,7 +230,7 @@ def get_accessible_task_queryset(user, queryset=None):
     queryset = queryset if queryset is not None else Task.objects.all()
     if is_manager_user(user):
         return queryset
-    return queryset.filter(Q(current_assignee=user) | Q(project__manager=user)).distinct()
+    return queryset.filter(Q(current_assignee=user) | Q(project__manager=user))
 
 
 def user_can_access_project_context(user, project: Project) -> bool:
