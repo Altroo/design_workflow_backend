@@ -1302,24 +1302,46 @@ class TaskReviewView(APIView):
                 {"review_state": ["Use request review, approve, or request changes."]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        previous_status = task.status
         task.review_state = next_state
         update_fields = ["review_state", "updated_by", "updated_at"]
         task.updated_by = request.user
-        if next_state == "needs_review":
+        if next_state == TaskReviewState.NEEDS_REVIEW:
+            if task.status != TaskStatus.IN_REVIEW:
+                task.status = TaskStatus.IN_REVIEW
+                update_fields.append("status")
             task.review_requested_by = request.user
             task.review_requested_at = timezone.now()
             task.review_approved_by = None
             task.review_approved_at = None
             update_fields.extend(["review_requested_by", "review_requested_at", "review_approved_by", "review_approved_at"])
-        elif next_state == "approved":
+        elif next_state == TaskReviewState.APPROVED:
             task.review_approved_by = request.user
             task.review_approved_at = timezone.now()
             update_fields.extend(["review_approved_by", "review_approved_at"])
-        elif next_state == "changes_requested":
+        elif next_state == TaskReviewState.CHANGES_REQUESTED:
             task.review_approved_by = None
             task.review_approved_at = None
             update_fields.extend(["review_approved_by", "review_approved_at"])
         task.save(update_fields=update_fields)
+        if previous_status != task.status:
+            record_task_activity(
+                task,
+                request.user,
+                TaskActivityType.STATUS_CHANGED,
+                {
+                    "previous_status": previous_status,
+                    "status": task.status,
+                    "event": "review_requested",
+                },
+            )
+            sync_task_work_session(
+                task,
+                user=request.user,
+                previous_status=previous_status,
+                next_status=task.status,
+                event="review_requested",
+            )
         notes = serializer.validated_data.get("notes", "")
         record_task_activity(
             task,
@@ -1328,7 +1350,7 @@ class TaskReviewView(APIView):
             {"previous_state": previous_state, "review_state": next_state, "notes": notes},
         )
         recipients = set(related_task_user_ids(task))
-        if next_state == "needs_review":
+        if next_state == TaskReviewState.NEEDS_REVIEW:
             recipients.add(task.project.manager_id)
         for recipient in User.objects.filter(id__in=[user_id for user_id in recipients if user_id != request.user.id]):
             create_notification(

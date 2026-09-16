@@ -1025,7 +1025,7 @@ class TestLinkedChatWorkflow:
 
 
 class TestDesignReviewWorkflow:
-    def test_task_review_state_is_separate_from_board_status_and_notifies_manager(self):
+    def test_requesting_review_moves_task_to_in_review_and_notifies_manager(self):
         manager = make_manager("manager-review@test.com")
         designer = make_designer("designer-review@test.com")
         project = Project.objects.create(
@@ -1055,10 +1055,17 @@ class TestDesignReviewWorkflow:
 
         assert response.status_code == 200
         task.refresh_from_db()
-        assert task.status == TaskStatus.IN_PROGRESS
+        assert task.status == TaskStatus.IN_REVIEW
         assert task.review_state == TaskReviewState.NEEDS_REVIEW
         assert task.review_requested_by == designer
         assert Notification.objects.filter(recipient=manager, type=NotificationType.REVIEW_REQUESTED, task=task).exists()
+        assert TaskActivity.objects.filter(
+            task=task,
+            action_type=TaskActivityType.STATUS_CHANGED,
+            metadata__previous_status=TaskStatus.IN_PROGRESS,
+            metadata__status=TaskStatus.IN_REVIEW,
+            metadata__event="review_requested",
+        ).exists()
 
         activity_count = TaskActivity.objects.filter(task=task).count()
         notification_count = Notification.objects.filter(task=task).count()
@@ -1080,7 +1087,7 @@ class TestDesignReviewWorkflow:
 
         assert response.status_code == 200
         task.refresh_from_db()
-        assert task.status == TaskStatus.IN_PROGRESS
+        assert task.status == TaskStatus.IN_REVIEW
         assert task.review_state == TaskReviewState.APPROVED
         assert task.review_approved_by == manager
 
