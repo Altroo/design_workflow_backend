@@ -215,6 +215,7 @@ class Task(TimestampedModel):
         null=True,
         blank=True,
     )
+    cover_image_label = models.CharField(max_length=255, blank=True)
     current_assignee = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,

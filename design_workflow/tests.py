@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import pytest
 from django.contrib.auth import get_user_model
 from django.core import mail
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -816,6 +817,39 @@ class TestPremiumBoardViews:
 
 
 class TestWorkflowAccessContracts:
+    def test_project_creator_can_list_basic_info_after_assigning_project_to_someone_else(self):
+        creator = make_designer("project-creator@test.com")
+        assignee = make_designer("project-assignee@test.com")
+        client = APIClient()
+        client.force_authenticate(user=creator)
+
+        created = client.post(
+            "/api/design-workflow/projects/",
+            {
+                "name": "Assigned brand project",
+                "description": "Visible in the project directory",
+                "manager_id": assignee.id,
+                "priority": Priority.MEDIUM,
+                "status": ProjectStatus.PLANNED,
+            },
+            format="json",
+        )
+
+        assert created.status_code == 201
+        assert created.data["can_work"] is False
+        assert client.get(f"/api/design-workflow/projects/{created.data['id']}/").status_code == 404
+
+        accessible_list = client.get("/api/design-workflow/projects/")
+        directory_list = client.get("/api/design-workflow/projects/?all=true")
+
+        assert accessible_list.status_code == 200
+        assert created.data["id"] not in {item["id"] for item in accessible_list.data}
+        assert directory_list.status_code == 200
+        listed_project = next(item for item in directory_list.data if item["id"] == created.data["id"])
+        assert listed_project["name"] == "Assigned brand project"
+        assert listed_project["manager"]["id"] == assignee.id
+        assert listed_project["can_work"] is False
+
     def test_designer_read_access_is_limited_to_assigned_project_context(self):
         manager = make_manager("manager-access@test.com")
         designer = make_designer("designer-access@test.com")
@@ -1033,7 +1067,7 @@ class TestDesignReviewWorkflow:
             {"review_state": TaskReviewState.NEEDS_REVIEW},
             format="json",
         )
-        assert repeated.status_code == 200
+        assert repeated.status_code == 400
         assert TaskActivity.objects.filter(task=task).count() == activity_count
         assert Notification.objects.filter(task=task).count() == notification_count
 
@@ -1050,6 +1084,145 @@ class TestDesignReviewWorkflow:
         assert task.review_state == TaskReviewState.APPROVED
         assert task.review_approved_by == manager
 
+    def test_review_actions_follow_requester_and_reviewer_roles(self):
+        manager = make_manager("manager-review-roles@test.com")
+        designer = make_designer("designer-review-roles@test.com")
+        project = Project.objects.create(
+            name="Role based review",
+            manager=manager,
+            priority=Priority.MEDIUM,
+            status=ProjectStatus.ACTIVE,
+        )
+        task = Task.objects.create(
+            project=project,
+            title="Review roles",
+            current_assignee=designer,
+            status=TaskStatus.IN_PROGRESS,
+            priority=Priority.MEDIUM,
+            created_by=manager,
+            updated_by=manager,
+        )
+        client = APIClient()
+
+        client.force_authenticate(user=manager)
+        assert client.post(
+            f"/api/design-workflow/tasks/{task.id}/review/",
+            {"review_state": TaskReviewState.NEEDS_REVIEW},
+            format="json",
+        ).status_code == 403
+        assert client.post(
+            f"/api/design-workflow/tasks/{task.id}/review/",
+            {"review_state": TaskReviewState.APPROVED},
+            format="json",
+        ).status_code == 400
+
+        client.force_authenticate(user=designer)
+        assert client.post(
+            f"/api/design-workflow/tasks/{task.id}/review/",
+            {"review_state": TaskReviewState.APPROVED},
+            format="json",
+        ).status_code == 403
+
+
+class TestDesignerBoardMediaPermissions:
+    def test_designer_project_owner_can_reorder_an_unassigned_project_task(self):
+        owner = make_designer("designer-owner-reorder@test.com")
+        other_designer = make_designer("designer-assignee-reorder@test.com")
+        project = Project.objects.create(
+            name="Designer owned board",
+            manager=owner,
+            priority=Priority.MEDIUM,
+            status=ProjectStatus.ACTIVE,
+        )
+        task = Task.objects.create(
+            project=project,
+            title="Move this card",
+            current_assignee=other_designer,
+            status=TaskStatus.TODO,
+            priority=Priority.MEDIUM,
+            created_by=owner,
+            updated_by=owner,
+        )
+        client = APIClient()
+        client.force_authenticate(user=owner)
+
+        response = client.patch(
+            "/api/design-workflow/tasks/reorder/",
+            {
+                "moved_task_id": task.id,
+                "tasks": [{"id": task.id, "status": TaskStatus.IN_PROGRESS, "sort_order": 0}],
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        task.refresh_from_db()
+        assert task.status == TaskStatus.IN_PROGRESS
+
+    def test_designer_project_owner_can_label_and_delete_task_media(self, settings, tmp_path):
+        settings.MEDIA_ROOT = tmp_path
+        owner = make_designer("designer-owner-media@test.com")
+        other_designer = make_designer("designer-assignee-media@test.com")
+        project = Project.objects.create(
+            name="Designer media project",
+            manager=owner,
+            priority=Priority.MEDIUM,
+            status=ProjectStatus.ACTIVE,
+        )
+        task = Task.objects.create(
+            project=project,
+            title="Media card",
+            current_assignee=other_designer,
+            status=TaskStatus.TODO,
+            priority=Priority.MEDIUM,
+            created_by=owner,
+            updated_by=owner,
+        )
+        client = APIClient()
+        client.force_authenticate(user=owner)
+
+        missing_label = client.post(
+            f"/api/design-workflow/tasks/{task.id}/attachments/",
+            {"file": SimpleUploadedFile("brief.txt", b"brief", content_type="text/plain")},
+            format="multipart",
+        )
+        assert missing_label.status_code == 400
+
+        attachment_response = client.post(
+            f"/api/design-workflow/tasks/{task.id}/attachments/",
+            {
+                "file": SimpleUploadedFile("brief.txt", b"brief", content_type="text/plain"),
+                "name": "Brief client final",
+            },
+            format="multipart",
+        )
+        assert attachment_response.status_code == 201
+        assert attachment_response.data["name"] == "Brief client final"
+        attachment_id = attachment_response.data["id"]
+        assert client.delete(
+            f"/api/design-workflow/tasks/{task.id}/attachments/{attachment_id}/"
+        ).status_code == 204
+
+        cover_response = client.post(
+            f"/api/design-workflow/tasks/{task.id}/cover/",
+            {
+                "cover_image": SimpleUploadedFile(
+                    "preview.gif",
+                    b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;",
+                    content_type="image/gif",
+                ),
+                "name": "Aperçu de la carte",
+            },
+            format="multipart",
+        )
+        assert cover_response.status_code == 200
+        assert cover_response.data["cover_image_label"] == "Aperçu de la carte"
+        assert client.delete(f"/api/design-workflow/tasks/{task.id}/cover/").status_code == 200
+        task.refresh_from_db()
+        assert task.cover_image_label == ""
+
+
+class TestDesignReviewArtifacts:
     def test_versions_and_annotations_attach_to_task_artifacts(self):
         manager = make_manager("manager-artifact@test.com")
         designer = make_designer("designer-artifact@test.com")

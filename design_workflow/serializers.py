@@ -51,13 +51,23 @@ class ProjectSummarySerializer(serializers.ModelSerializer):
     manager = UserSummarySerializer(read_only=True)
     total_logged_minutes = serializers.IntegerField(read_only=True)
     open_tasks_count = serializers.IntegerField(read_only=True)
+    can_work = serializers.SerializerMethodField()
+
+    def get_can_work(self, obj):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            return False
+        if user.role == "manager" or user.is_staff or getattr(user, "is_superuser", False):
+            return True
+        return obj.manager_id == user.id or obj.tasks.filter(current_assignee=user).exists()
 
     class Meta:
         model = Project
         fields = (
             "id", "name", "description", "manager", "start_date", "target_end_date",
             "priority", "status", "archived", "archived_at", "total_logged_minutes",
-            "open_tasks_count", "created_at", "updated_at",
+            "open_tasks_count", "can_work", "created_at", "updated_at",
         )
 
 
@@ -184,7 +194,7 @@ class TaskCardSerializer(serializers.ModelSerializer):
             "id", "project", "title", "description", "current_assignee", "status",
             "priority", "due_date", "estimated_minutes", "actual_minutes", "review_state",
             "review_requested_by", "review_requested_at", "review_approved_by", "review_approved_at", "blocked_reason",
-            "sort_order", "labels", "checklists", "checklist_items", "attachments", "cover_image_url", "archived", "archived_at",
+            "sort_order", "labels", "checklists", "checklist_items", "attachments", "cover_image_url", "cover_image_label", "archived", "archived_at",
             "is_completed", "completed_at", "work_started_at", "is_overdue", "source_chat_message_id", "source_chat_thread_id",
             "created_at", "updated_at",
         )

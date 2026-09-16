@@ -648,22 +648,27 @@ class ProjectListCreateView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def get(self, request):
-        queryset = get_accessible_project_queryset(
-            request.user,
-            Project.objects.select_related("manager").all(),
-        )
+        queryset = Project.objects.select_related("manager").all()
+        if parse_bool(request.query_params.get("all")) is not True:
+            queryset = get_accessible_project_queryset(request.user, queryset)
         archived = parse_bool(request.query_params.get("archived"))
         if archived is not None:
             queryset = queryset.filter(archived=archived)
         if request.query_params.get("status"):
             queryset = queryset.filter(status=request.query_params.get("status"))
-        return Response(ProjectSummarySerializer(queryset, many=True).data, status=status.HTTP_200_OK)
+        return Response(
+            ProjectSummarySerializer(queryset, many=True, context={"request": request}).data,
+            status=status.HTTP_200_OK,
+        )
 
     def post(self, request):
         serializer = ProjectWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         project = serializer.save()
-        return Response(ProjectSummarySerializer(project).data, status=status.HTTP_201_CREATED)
+        return Response(
+            ProjectSummarySerializer(project, context={"request": request}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class ProjectDetailView(APIView):
@@ -714,7 +719,10 @@ class ProjectDetailView(APIView):
                 if project.status == ProjectStatus.ARCHIVED:
                     project.status = ProjectStatus.PLANNED
                 project.save(update_fields=["archived_at", "status", "updated_at"])
-        return Response(ProjectSummarySerializer(project).data, status=status.HTTP_200_OK)
+        return Response(
+            ProjectSummarySerializer(project, context={"request": request}).data,
+            status=status.HTTP_200_OK,
+        )
 
 
 class TaskListCreateView(APIView):
@@ -865,7 +873,7 @@ class TaskReorderView(APIView):
                 )
             }
             moved_task = tasks_by_id.get(moved_task_id) or get_task_or_404(moved_task_id, request.user)
-            if not can_mutate_task(request.user, moved_task):
+            if not user_can_access_task_context(request.user, moved_task):
                 return Response(status=status.HTTP_403_FORBIDDEN)
 
             updated_tasks = []
@@ -975,27 +983,34 @@ class TaskCoverImageView(APIView):
 
     def post(self, request, pk: int):
         task = get_task_or_404(pk, request.user)
-        if request.user.role != "manager" and task.current_assignee_id != request.user.id:
+        if not user_can_access_task_context(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         cover_image = request.FILES.get("cover_image")
         if not cover_image:
             return Response({"cover_image": ["Cover image file is required."]}, status=status.HTTP_400_BAD_REQUEST)
+        cover_image_label = str(request.data.get("name") or "").strip()
+        if not cover_image_label:
+            return Response({"name": ["Describe what this image is about."]}, status=status.HTTP_400_BAD_REQUEST)
+        if len(cover_image_label) > 255:
+            return Response({"name": ["Ensure this label has no more than 255 characters."]}, status=status.HTTP_400_BAD_REQUEST)
         task.cover_image = cover_image
+        task.cover_image_label = cover_image_label
         task.updated_by = request.user
-        task.save(update_fields=["cover_image", "updated_by", "updated_at"])
-        record_task_activity(task, request.user, TaskActivityType.ATTACHMENT_ADDED, {"cover_image": True, "name": cover_image.name})
+        task.save(update_fields=["cover_image", "cover_image_label", "updated_by", "updated_at"])
+        record_task_activity(task, request.user, TaskActivityType.ATTACHMENT_ADDED, {"cover_image": True, "name": cover_image_label})
         broadcast_task_event(task, "cover_updated", recipients=related_task_user_ids(task))
         return Response(TaskDetailSerializer(get_task_detail_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_200_OK)
 
     def delete(self, request, pk: int):
         task = get_task_or_404(pk, request.user)
-        if request.user.role != "manager" and task.current_assignee_id != request.user.id:
+        if not user_can_access_task_context(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         if task.cover_image:
             task.cover_image.delete(save=False)
         task.cover_image = None
+        task.cover_image_label = ""
         task.updated_by = request.user
-        task.save(update_fields=["cover_image", "updated_by", "updated_at"])
+        task.save(update_fields=["cover_image", "cover_image_label", "updated_by", "updated_at"])
         record_task_activity(task, request.user, TaskActivityType.ATTACHMENT_ADDED, {"cover_image": True, "removed": True})
         broadcast_task_event(task, "cover_deleted", recipients=related_task_user_ids(task))
         return Response(TaskDetailSerializer(get_task_detail_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_200_OK)
@@ -1182,16 +1197,21 @@ class TaskAttachmentsView(APIView):
 
     def post(self, request, pk: int):
         task = get_task_or_404(pk, request.user)
-        if not can_mutate_task(request.user, task):
+        if not user_can_access_task_context(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         upload = request.FILES.get("file")
         if not upload:
             return Response({"file": ["This field is required."]}, status=status.HTTP_400_BAD_REQUEST)
+        attachment_name = str(request.data.get("name") or "").strip()
+        if not attachment_name:
+            return Response({"name": ["Describe what this attachment is about."]}, status=status.HTTP_400_BAD_REQUEST)
+        if len(attachment_name) > 255:
+            return Response({"name": ["Ensure this label has no more than 255 characters."]}, status=status.HTTP_400_BAD_REQUEST)
         attachment = TaskAttachment.objects.create(
             task=task,
             uploaded_by=request.user,
             file=upload,
-            name=request.data.get("name") or upload.name,
+            name=attachment_name,
             mime_type=getattr(upload, "content_type", "") or "",
             size=getattr(upload, "size", 0) or 0,
         )
@@ -1205,7 +1225,7 @@ class TaskAttachmentDetailView(APIView):
 
     def post(self, request, pk: int, attachment_id: int):
         task = get_task_or_404(pk, request.user)
-        if not can_mutate_task(request.user, task):
+        if not user_can_access_task_context(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         try:
             attachment = task.attachments.get(pk=attachment_id)
@@ -1220,14 +1240,15 @@ class TaskAttachmentDetailView(APIView):
         finally:
             attachment.file.close()
         task.updated_by = request.user
-        task.save(update_fields=["cover_image", "updated_by", "updated_at"])
+        task.cover_image_label = attachment.name
+        task.save(update_fields=["cover_image", "cover_image_label", "updated_by", "updated_at"])
         record_task_activity(task, request.user, TaskActivityType.ATTACHMENT_ADDED, {"cover_image": True, "attachment_id": attachment.id, "name": attachment.name})
         broadcast_task_event(task, "cover_updated", recipients=related_task_user_ids(task))
         return Response(TaskDetailSerializer(get_task_detail_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_200_OK)
 
     def delete(self, request, pk: int, attachment_id: int):
         task = get_task_or_404(pk, request.user)
-        if not can_mutate_task(request.user, task):
+        if not user_can_access_task_context(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         try:
             attachment = task.attachments.get(pk=attachment_id)
@@ -1249,13 +1270,37 @@ class TaskReviewView(APIView):
         serializer.is_valid(raise_exception=True)
         previous_state = task.review_state
         next_state = serializer.validated_data["review_state"]
-        if previous_state == next_state:
+        reviewer = is_manager_user(request.user)
+        if next_state == TaskReviewState.NEEDS_REVIEW:
+            if reviewer:
+                return Response(
+                    {"review_state": ["Managers review submitted work; they do not request its review."]},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            if previous_state not in {
+                TaskReviewState.NOT_SUBMITTED,
+                TaskReviewState.CHANGES_REQUESTED,
+                TaskReviewState.APPROVED,
+            }:
+                return Response(
+                    {"review_state": ["This task is already waiting for review."]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        elif next_state in {TaskReviewState.APPROVED, TaskReviewState.CHANGES_REQUESTED}:
+            if not reviewer:
+                return Response(
+                    {"review_state": ["Only a manager can complete a review."]},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            if previous_state != TaskReviewState.NEEDS_REVIEW:
+                return Response(
+                    {"review_state": ["The designer must request a review first."]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
             return Response(
-                TaskDetailSerializer(
-                    get_task_detail_queryset().get(pk=task.pk),
-                    context={"request": request},
-                ).data,
-                status=status.HTTP_200_OK,
+                {"review_state": ["Use request review, approve, or request changes."]},
+                status=status.HTTP_400_BAD_REQUEST,
             )
         task.review_state = next_state
         update_fields = ["review_state", "updated_by", "updated_at"]
@@ -1270,12 +1315,6 @@ class TaskReviewView(APIView):
             task.review_approved_by = request.user
             task.review_approved_at = timezone.now()
             update_fields.extend(["review_approved_by", "review_approved_at"])
-        elif next_state == "not_submitted":
-            task.review_requested_by = None
-            task.review_requested_at = None
-            task.review_approved_by = None
-            task.review_approved_at = None
-            update_fields.extend(["review_requested_by", "review_requested_at", "review_approved_by", "review_approved_at"])
         elif next_state == "changes_requested":
             task.review_approved_by = None
             task.review_approved_at = None
