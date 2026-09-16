@@ -95,6 +95,7 @@ class NotificationType(models.TextChoices):
     TASK_DUE_SOON = "task_due_soon", "Task due soon"
     TASK_OVERDUE = "task_overdue", "Task overdue"
     TASK_COMMENT = "task_comment", "Task comment"
+    TASK_MENTION = "task_mention", "Task mention"
     TASK_STATUS = "task_status", "Task status"
     TASK_BLOCKED = "task_blocked", "Task blocked"
     CHAT_MESSAGE = "chat_message", "Chat message"

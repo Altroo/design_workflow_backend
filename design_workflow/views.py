@@ -1,5 +1,6 @@
 from datetime import datetime, time, timedelta
 import re
+import unicodedata
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
@@ -41,7 +42,7 @@ from .models import (
     TaskStatus,
     TimeEntry,
 )
-from .permissions import IsManager, can_mutate_task
+from .permissions import IsManager, can_create_task_in_project, can_mutate_task
 from .serializers import (
     ChatMessageCreateSerializer,
     ChatMessageDecisionSerializer,
@@ -420,6 +421,46 @@ def extract_chat_mentions(body: str, thread: ChatThread, sender) -> list:
     return matched
 
 
+def extract_task_mentions(body: str, sender) -> list:
+    if not body.strip():
+        return []
+    tokens = {match.lower() for match in re.findall(r"@([\w.\-]+)", body)}
+    if not tokens:
+        return []
+    matched = []
+    for user in User.objects.filter(is_active=True).exclude(id=sender.id):
+        normalized_name = unicodedata.normalize(
+            "NFKD",
+            f"{user.first_name}.{user.last_name}",
+        ).encode("ascii", "ignore").decode("ascii").lower()
+        normalized_name = re.sub(r"[^a-z0-9._-]+", ".", normalized_name).strip(".")
+        candidates = {
+            user.first_name.lower(),
+            user.last_name.lower(),
+            user.email.split("@", 1)[0].lower(),
+            f"{user.first_name}.{user.last_name}".strip(".").lower(),
+            f"{user.first_name}_{user.last_name}".strip("_").lower(),
+            normalized_name,
+        }
+        if tokens & {candidate for candidate in candidates if candidate}:
+            matched.append(user)
+    return matched
+
+
+def notify_task_mentions(*, body: str, actor, task: Task, field: str, exclude_ids=None):
+    excluded = set(exclude_ids or ())
+    mentioned = [user for user in extract_task_mentions(body, actor) if user.id not in excluded]
+    for recipient in mentioned:
+        create_notification(
+            recipient=recipient,
+            notification_type=NotificationType.TASK_MENTION,
+            task=task,
+            project=task.project,
+            payload={"field": field, "actor_id": actor.id},
+        )
+    return {user.id for user in mentioned}
+
+
 class SavedViewListCreateView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
@@ -493,7 +534,7 @@ class WorkspaceSearchView(APIView):
 
         if "task" in requested_types:
             task_queryset = apply_task_filters(
-                get_accessible_task_queryset(request.user, get_task_queryset()),
+                get_task_queryset(),
                 request.query_params,
                 request.user,
             )[:10]
@@ -515,10 +556,7 @@ class WorkspaceSearchView(APIView):
             )
 
         if "project" in requested_types:
-            project_queryset = get_accessible_project_queryset(
-                request.user,
-                Project.objects.select_related("manager"),
-            ).filter(
+            project_queryset = Project.objects.select_related("manager").filter(
                 Q(name__icontains=query) | Q(description__icontains=query)
             )[:10]
             results.extend(
@@ -577,10 +615,7 @@ class WorkspaceSearchView(APIView):
 
         if "file" in requested_types:
             accessible_thread_ids = get_chat_thread_queryset_for_user(request.user).values("id")
-            accessible_task_ids = get_accessible_task_queryset(
-                request.user,
-                Task.objects.all(),
-            ).values("id")
+            accessible_task_ids = Task.objects.values("id")
             task_files = TaskAttachment.objects.select_related("task", "task__project", "uploaded_by").filter(
                 Q(task_id__in=accessible_task_ids),
                 Q(name__icontains=query) | Q(task__title__icontains=query) | Q(task__project__name__icontains=query),
@@ -683,8 +718,6 @@ class ProjectDetailView(APIView):
 
     def get(self, request, pk: int):
         project = self.get_object(pk)
-        if not user_can_access_project_context(request.user, project):
-            raise Http404
         return Response(ProjectDetailSerializer(project, context={"request": request}).data, status=status.HTTP_200_OK)
 
     def patch(self, request, pk: int):
@@ -731,7 +764,7 @@ class TaskListCreateView(APIView):
     def get(self, request):
         queryset = apply_task_sorting(
             apply_task_filters(
-                get_accessible_task_queryset(request.user, get_task_queryset()),
+                get_task_queryset(),
                 request.query_params,
                 request.user,
             ),
@@ -746,7 +779,14 @@ class TaskListCreateView(APIView):
         source_message = serializer.validated_data.get("source_chat_message")
         if source_message and (source_message.deleted_at or not can_access_chat_thread(request.user, source_message.thread)):
             return Response({"source_chat_message_id": ["Source message is not available."]}, status=status.HTTP_400_BAD_REQUEST)
+        project = serializer.validated_data["project"]
+        if not can_create_task_in_project(request.user, project):
+            return Response(
+                {"project_id": ["Only the project owner can add tasks to this project."]},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         task = serializer.save(created_by=request.user, updated_by=request.user)
+        notify_task_mentions(body=task.description, actor=request.user, task=task, field="description")
         activity_metadata = {"status": task.status, "assignee_id": task.current_assignee_id}
         if task.source_chat_message_id:
             activity_metadata |= {
@@ -770,16 +810,19 @@ class TaskDetailView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def get(self, request, pk: int):
-        return Response(TaskDetailSerializer(get_task_or_404(pk, request.user), context={"request": request}).data, status=status.HTTP_200_OK)
+        return Response(TaskDetailSerializer(get_task_or_404(pk), context={"request": request}).data, status=status.HTTP_200_OK)
 
     def patch(self, request, pk: int):
-        task = get_task_or_404(pk, request.user)
+        task = get_task_or_404(pk)
+        if not can_mutate_task(request.user, task):
+            return Response(status=status.HTTP_403_FORBIDDEN)
         previous = {
             "status": task.status,
             "priority": task.priority,
             "due_date": task.due_date.isoformat() if task.due_date else None,
             "assignee_id": task.current_assignee_id,
             "label_ids": list(task.labels.values_list("id", flat=True)),
+            "description_mentions": {user.id for user in extract_task_mentions(task.description, request.user)},
         }
         serializer = TaskWriteSerializer(
             task,
@@ -792,6 +835,14 @@ class TaskDetailView(APIView):
         if source_message and (source_message.deleted_at or not can_access_chat_thread(request.user, source_message.thread)):
             return Response({"source_chat_message_id": ["Source message is not available."]}, status=status.HTTP_400_BAD_REQUEST)
         task = serializer.save(updated_by=request.user)
+        if "description" in serializer.validated_data:
+            notify_task_mentions(
+                body=task.description,
+                actor=request.user,
+                task=task,
+                field="description",
+                exclude_ids=previous["description_mentions"],
+            )
         if previous["status"] != task.status:
             record_task_activity(task, request.user, TaskActivityType.STATUS_CHANGED, previous | {"next": task.status})
             sync_task_work_session(
@@ -865,15 +916,12 @@ class TaskReorderView(APIView):
         with transaction.atomic():
             tasks_by_id = {
                 task.id: task
-                for task in get_accessible_task_queryset(
-                    request.user,
-                    Task.objects.select_related("project", "current_assignee")
+                for task in Task.objects.select_related("project", "current_assignee")
                     .select_for_update(of=("self",))
-                    .filter(id__in=ordered_ids),
-                )
+                    .filter(id__in=ordered_ids)
             }
-            moved_task = tasks_by_id.get(moved_task_id) or get_task_or_404(moved_task_id, request.user)
-            if not user_can_access_task_context(request.user, moved_task):
+            moved_task = tasks_by_id.get(moved_task_id) or get_task_or_404(moved_task_id)
+            if not can_mutate_task(request.user, moved_task):
                 return Response(status=status.HTTP_403_FORBIDDEN)
 
             updated_tasks = []
@@ -884,7 +932,7 @@ class TaskReorderView(APIView):
                 if task is None:
                     continue
                 changed = False
-                if task.status != item["status"]:
+                if task.id == moved_task_id and task.status != item["status"]:
                     task.status = item["status"]
                     changed = True
                 if task.sort_order != item["sort_order"]:
@@ -983,7 +1031,7 @@ class TaskCoverImageView(APIView):
 
     def post(self, request, pk: int):
         task = get_task_or_404(pk, request.user)
-        if not user_can_access_task_context(request.user, task):
+        if not can_mutate_task(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         cover_image = request.FILES.get("cover_image")
         if not cover_image:
@@ -1003,7 +1051,7 @@ class TaskCoverImageView(APIView):
 
     def delete(self, request, pk: int):
         task = get_task_or_404(pk, request.user)
-        if not user_can_access_task_context(request.user, task):
+        if not can_mutate_task(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         if task.cover_image:
             task.cover_image.delete(save=False)
@@ -1197,7 +1245,7 @@ class TaskAttachmentsView(APIView):
 
     def post(self, request, pk: int):
         task = get_task_or_404(pk, request.user)
-        if not user_can_access_task_context(request.user, task):
+        if not can_mutate_task(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         upload = request.FILES.get("file")
         if not upload:
@@ -1225,7 +1273,7 @@ class TaskAttachmentDetailView(APIView):
 
     def post(self, request, pk: int, attachment_id: int):
         task = get_task_or_404(pk, request.user)
-        if not user_can_access_task_context(request.user, task):
+        if not can_mutate_task(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         try:
             attachment = task.attachments.get(pk=attachment_id)
@@ -1248,7 +1296,7 @@ class TaskAttachmentDetailView(APIView):
 
     def delete(self, request, pk: int, attachment_id: int):
         task = get_task_or_404(pk, request.user)
-        if not user_can_access_task_context(request.user, task):
+        if not can_mutate_task(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         try:
             attachment = task.attachments.get(pk=attachment_id)
@@ -1412,7 +1460,7 @@ class AttachmentAnnotationListView(APIView):
             attachment = TaskAttachment.objects.select_related("task", "task__project").get(pk=pk)
         except TaskAttachment.DoesNotExist as exc:
             raise Http404 from exc
-        if not user_can_access_task_context(request.user, attachment.task):
+        if not can_mutate_task(request.user, attachment.task):
             raise Http404
         return attachment
 
@@ -1479,7 +1527,12 @@ class TaskCommentsView(APIView):
         serializer.is_valid(raise_exception=True)
         comment = serializer.save(task=task, author=request.user)
         record_task_activity(task, request.user, TaskActivityType.COMMENT_ADDED, {"comment_id": comment.id})
-        recipient_ids = [user_id for user_id in related_task_user_ids(task) if user_id != request.user.id]
+        mention_ids = notify_task_mentions(body=comment.body, actor=request.user, task=task, field="comment")
+        recipient_ids = [
+            user_id
+            for user_id in related_task_user_ids(task)
+            if user_id != request.user.id and user_id not in mention_ids
+        ]
         for recipient in User.objects.filter(id__in=recipient_ids):
             create_notification(recipient=recipient, notification_type=NotificationType.TASK_COMMENT, task=task, project=task.project, payload={"comment_id": comment.id})
         broadcast_task_event(task, "comment_added", recipients=related_task_user_ids(task))

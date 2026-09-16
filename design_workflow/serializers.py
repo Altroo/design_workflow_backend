@@ -31,6 +31,7 @@ from .models import (
     TimeEntry,
     TaskComment,
 )
+from .permissions import can_create_task_in_project, can_mutate_task
 
 User = get_user_model()
 
@@ -58,9 +59,7 @@ class ProjectSummarySerializer(serializers.ModelSerializer):
         user = getattr(request, "user", None)
         if not user or not user.is_authenticated:
             return False
-        if user.role == "manager" or user.is_staff or getattr(user, "is_superuser", False):
-            return True
-        return obj.manager_id == user.id or obj.tasks.filter(current_assignee=user).exists()
+        return can_create_task_in_project(user, obj)
 
     class Meta:
         model = Project
@@ -187,6 +186,7 @@ class TaskCardSerializer(serializers.ModelSerializer):
     cover_image_url = serializers.SerializerMethodField()
     source_chat_message_id = serializers.IntegerField(read_only=True)
     source_chat_thread_id = serializers.SerializerMethodField()
+    can_edit = serializers.SerializerMethodField()
 
     class Meta:
         model = Task
@@ -196,8 +196,12 @@ class TaskCardSerializer(serializers.ModelSerializer):
             "review_requested_by", "review_requested_at", "review_approved_by", "review_approved_at", "blocked_reason",
             "sort_order", "labels", "checklists", "checklist_items", "attachments", "cover_image_url", "cover_image_label", "archived", "archived_at",
             "is_completed", "completed_at", "work_started_at", "is_overdue", "source_chat_message_id", "source_chat_thread_id",
-            "created_at", "updated_at",
+            "can_edit", "created_at", "updated_at",
         )
+
+    def get_can_edit(self, obj):
+        request = self.context.get("request")
+        return can_mutate_task(getattr(request, "user", None), obj)
 
     def get_cover_image_url(self, obj):
         request = self.context.get("request")

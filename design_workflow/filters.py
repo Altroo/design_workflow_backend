@@ -27,6 +27,7 @@ class TaskFilter(django_filters.FilterSet):
     overdue = django_filters.CharFilter(method="filter_overdue")
     blocked = django_filters.CharFilter(method="filter_blocked")
     mine = django_filters.CharFilter(method="filter_mine")
+    my_projects = django_filters.CharFilter(method="filter_my_projects")
     start_date = django_filters.CharFilter(field_name="project__start_date", lookup_expr="gte")
     end_date = django_filters.CharFilter(field_name="project__target_end_date", lookup_expr="lte")
 
@@ -44,6 +45,7 @@ class TaskFilter(django_filters.FilterSet):
             "overdue",
             "blocked",
             "mine",
+            "my_projects",
             "start_date",
             "end_date",
         )
@@ -91,4 +93,9 @@ class TaskFilter(django_filters.FilterSet):
     def filter_mine(self, queryset, name, value):
         if _parse_bool(value) is True and self.user is not None:
             return queryset.filter(current_assignee=self.user)
+        return queryset
+
+    def filter_my_projects(self, queryset, name, value):
+        if _parse_bool(value) is True and self.user is not None:
+            return queryset.filter(project__manager=self.user)
         return queryset

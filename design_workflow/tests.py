@@ -399,14 +399,14 @@ class TestTaskCreation:
         assert response.status_code == 201
         assert response.data["manager"]["id"] == designer.id
 
-    def test_designer_can_create_task_for_another_user_with_an_estimate(self):
+    def test_project_owner_can_create_task_for_another_user_with_an_estimate(self):
         manager = make_manager("manager-task-create@test.com")
         designer = make_designer("designer-task-create@test.com")
         other_designer = make_designer("other-designer-task-create@test.com")
         project = Project.objects.create(
             name="Quick board cards",
             description="Flexible intake",
-            manager=manager,
+            manager=designer,
             priority=Priority.MEDIUM,
             status=ProjectStatus.ACTIVE,
         )
@@ -749,7 +749,7 @@ class TestPremiumBoardViews:
         assert response.status_code == 200
         assert [item["id"] for item in response.data if item["type"] == "task"] == [task.id]
 
-    def test_workspace_search_scopes_designer_results_to_accessible_work(self):
+    def test_workspace_search_includes_read_only_projects_and_tasks(self):
         manager = make_manager("manager-search-scope@test.com")
         designer = make_designer("designer-search-scope@test.com")
         outsider = make_designer("outsider-search-scope@test.com")
@@ -811,9 +811,7 @@ class TestPremiumBoardViews:
         assert response.status_code == 200
         result_titles = {item["title"] for item in response.data}
         assert {"Studio visible task", "Studio visible project", "studio-visible.png"}.issubset(result_titles)
-        assert "Studio hidden task" not in result_titles
-        assert "Studio hidden project" not in result_titles
-        assert "studio-hidden.png" not in result_titles
+        assert {"Studio hidden task", "Studio hidden project", "studio-hidden.png"}.issubset(result_titles)
 
 
 class TestWorkflowAccessContracts:
@@ -837,7 +835,9 @@ class TestWorkflowAccessContracts:
 
         assert created.status_code == 201
         assert created.data["can_work"] is False
-        assert client.get(f"/api/design-workflow/projects/{created.data['id']}/").status_code == 404
+        detail = client.get(f"/api/design-workflow/projects/{created.data['id']}/")
+        assert detail.status_code == 200
+        assert detail.data["can_work"] is False
 
         accessible_list = client.get("/api/design-workflow/projects/")
         directory_list = client.get("/api/design-workflow/projects/?all=true")
@@ -850,7 +850,7 @@ class TestWorkflowAccessContracts:
         assert listed_project["manager"]["id"] == assignee.id
         assert listed_project["can_work"] is False
 
-    def test_designer_read_access_is_limited_to_assigned_project_context(self):
+    def test_designer_can_read_all_projects_and_tasks_without_edit_access(self):
         manager = make_manager("manager-access@test.com")
         designer = make_designer("designer-access@test.com")
         outsider = make_designer("outsider-access@test.com")
@@ -900,15 +900,86 @@ class TestWorkflowAccessContracts:
 
         assert client.get(f"/api/design-workflow/projects/{visible_project.id}/").status_code == 200
         assert client.get(f"/api/design-workflow/tasks/{visible_task.id}/").status_code == 200
-        assert client.get(f"/api/design-workflow/projects/{hidden_project.id}/").status_code == 404
-        assert client.get(f"/api/design-workflow/tasks/{hidden_task.id}/").status_code == 404
+        hidden_project_response = client.get(f"/api/design-workflow/projects/{hidden_project.id}/")
+        hidden_task_response = client.get(f"/api/design-workflow/tasks/{hidden_task.id}/")
+        assert hidden_project_response.status_code == 200
+        assert hidden_project_response.data["can_work"] is False
+        assert {item["id"] for item in hidden_project_response.data["tasks"]} == {hidden_task.id}
+        assert hidden_task_response.status_code == 200
+        assert hidden_task_response.data["can_edit"] is False
+        assert client.patch(
+            f"/api/design-workflow/tasks/{hidden_task.id}/",
+            {"title": "Forbidden edit"},
+            format="json",
+        ).status_code == 403
         assert client.get(f"/api/design-workflow/attachments/{hidden_attachment.id}/annotations/").status_code == 404
 
         list_response = client.get("/api/design-workflow/tasks/")
         assert list_response.status_code == 200
         task_ids = {item["id"] for item in list_response.data}
         assert visible_task.id in task_ids
-        assert hidden_task.id not in task_ids
+        assert hidden_task.id in task_ids
+
+    def test_task_assignment_grants_task_edit_but_not_project_task_creation(self):
+        owner = make_designer("project-owner-create@test.com")
+        assignee = make_designer("assigned-task-only@test.com")
+        project = Project.objects.create(
+            name="Owner controlled project",
+            manager=owner,
+            priority=Priority.MEDIUM,
+            status=ProjectStatus.ACTIVE,
+        )
+        assigned_task = Task.objects.create(
+            project=project,
+            title="Assigned card",
+            current_assignee=assignee,
+            status=TaskStatus.TODO,
+            priority=Priority.MEDIUM,
+            created_by=owner,
+            updated_by=owner,
+        )
+        client = APIClient()
+        client.force_authenticate(user=assignee)
+
+        task_detail = client.get(f"/api/design-workflow/tasks/{assigned_task.id}/")
+        assert task_detail.status_code == 200
+        assert task_detail.data["can_edit"] is True
+        assert client.patch(
+            f"/api/design-workflow/tasks/{assigned_task.id}/status/",
+            {"status": TaskStatus.IN_PROGRESS},
+            format="json",
+        ).status_code == 200
+
+        create_response = client.post(
+            "/api/design-workflow/tasks/",
+            {
+                "project_id": project.id,
+                "title": "Unauthorized sibling card",
+                "current_assignee_id": assignee.id,
+                "status": TaskStatus.TODO,
+                "priority": Priority.MEDIUM,
+            },
+            format="json",
+        )
+        assert create_response.status_code == 403
+        assert not Task.objects.filter(title="Unauthorized sibling card").exists()
+
+        client.force_authenticate(user=owner)
+        owned_project_tasks = client.get("/api/design-workflow/tasks/?my_projects=true")
+        assert owned_project_tasks.status_code == 200
+        assert {item["id"] for item in owned_project_tasks.data} == {assigned_task.id}
+        owner_create_response = client.post(
+            "/api/design-workflow/tasks/",
+            {
+                "project_id": project.id,
+                "title": "Owner-created card",
+                "current_assignee_id": assignee.id,
+                "status": TaskStatus.TODO,
+                "priority": Priority.MEDIUM,
+            },
+            format="json",
+        )
+        assert owner_create_response.status_code == 201
 
 
 class TestLinkedChatWorkflow:
@@ -1139,7 +1210,7 @@ class TestDesignReviewWorkflow:
 
 
 class TestDesignerBoardMediaPermissions:
-    def test_designer_project_owner_can_reorder_an_unassigned_project_task(self):
+    def test_designer_project_owner_cannot_reorder_another_users_task(self):
         owner = make_designer("designer-owner-reorder@test.com")
         other_designer = make_designer("designer-assignee-reorder@test.com")
         project = Project.objects.create(
@@ -1169,11 +1240,11 @@ class TestDesignerBoardMediaPermissions:
             format="json",
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 403
         task.refresh_from_db()
-        assert task.status == TaskStatus.IN_PROGRESS
+        assert task.status == TaskStatus.TODO
 
-    def test_designer_project_owner_can_label_and_delete_task_media(self, settings, tmp_path):
+    def test_only_task_assignee_can_add_and_delete_task_media(self, settings, tmp_path):
         settings.MEDIA_ROOT = tmp_path
         owner = make_designer("designer-owner-media@test.com")
         other_designer = make_designer("designer-assignee-media@test.com")
@@ -1194,6 +1265,17 @@ class TestDesignerBoardMediaPermissions:
         )
         client = APIClient()
         client.force_authenticate(user=owner)
+
+        assert client.post(
+            f"/api/design-workflow/tasks/{task.id}/attachments/",
+            {
+                "file": SimpleUploadedFile("owner-brief.txt", b"brief", content_type="text/plain"),
+                "name": "Owner brief",
+            },
+            format="multipart",
+        ).status_code == 403
+
+        client.force_authenticate(user=other_designer)
 
         missing_label = client.post(
             f"/api/design-workflow/tasks/{task.id}/attachments/",
@@ -1234,6 +1316,58 @@ class TestDesignerBoardMediaPermissions:
         assert client.delete(f"/api/design-workflow/tasks/{task.id}/cover/").status_code == 200
         task.refresh_from_db()
         assert task.cover_image_label == ""
+
+
+class TestTaskMentions:
+    def test_comment_and_description_mentions_notify_tagged_user(self):
+        owner = make_designer("mention-owner@test.com")
+        tagged = make_designer("nadia.bennani@test.com")
+        tagged.first_name = "Nadia"
+        tagged.last_name = "Bennani"
+        tagged.save(update_fields=["first_name", "last_name"])
+        project = Project.objects.create(
+            name="Mention project",
+            manager=owner,
+            priority=Priority.MEDIUM,
+            status=ProjectStatus.ACTIVE,
+        )
+        task = Task.objects.create(
+            project=project,
+            title="Mention card",
+            current_assignee=owner,
+            status=TaskStatus.TODO,
+            priority=Priority.MEDIUM,
+            created_by=owner,
+            updated_by=owner,
+        )
+        client = APIClient()
+        client.force_authenticate(user=owner)
+
+        description_response = client.patch(
+            f"/api/design-workflow/tasks/{task.id}/",
+            {"description": "Please check the layout @Nadia.Bennani"},
+            format="json",
+        )
+        assert description_response.status_code == 200
+        assert Notification.objects.filter(
+            recipient=tagged,
+            type=NotificationType.TASK_MENTION,
+            task=task,
+            payload__field="description",
+        ).exists()
+
+        comment_response = client.post(
+            f"/api/design-workflow/tasks/{task.id}/comments/",
+            {"body": "@nadia.bennani can you verify this?"},
+            format="json",
+        )
+        assert comment_response.status_code == 201
+        assert Notification.objects.filter(
+            recipient=tagged,
+            type=NotificationType.TASK_MENTION,
+            task=task,
+            payload__field="comment",
+        ).exists()
 
 
 class TestDesignReviewArtifacts:
