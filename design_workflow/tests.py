@@ -1087,9 +1087,16 @@ class TestDesignReviewWorkflow:
 
         assert response.status_code == 200
         task.refresh_from_db()
-        assert task.status == TaskStatus.IN_REVIEW
+        assert task.status == TaskStatus.DONE
         assert task.review_state == TaskReviewState.APPROVED
         assert task.review_approved_by == manager
+        assert TaskActivity.objects.filter(
+            task=task,
+            action_type=TaskActivityType.STATUS_CHANGED,
+            metadata__previous_status=TaskStatus.IN_REVIEW,
+            metadata__status=TaskStatus.DONE,
+            metadata__event="review_approved",
+        ).exists()
 
     def test_review_actions_follow_requester_and_reviewer_roles(self):
         manager = make_manager("manager-review-roles@test.com")

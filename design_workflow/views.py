@@ -1316,6 +1316,9 @@ class TaskReviewView(APIView):
             task.review_approved_at = None
             update_fields.extend(["review_requested_by", "review_requested_at", "review_approved_by", "review_approved_at"])
         elif next_state == TaskReviewState.APPROVED:
+            if task.status != TaskStatus.DONE:
+                task.status = TaskStatus.DONE
+                update_fields.append("status")
             task.review_approved_by = request.user
             task.review_approved_at = timezone.now()
             update_fields.extend(["review_approved_by", "review_approved_at"])
@@ -1325,6 +1328,7 @@ class TaskReviewView(APIView):
             update_fields.extend(["review_approved_by", "review_approved_at"])
         task.save(update_fields=update_fields)
         if previous_status != task.status:
+            status_event = "review_requested" if next_state == TaskReviewState.NEEDS_REVIEW else "review_approved"
             record_task_activity(
                 task,
                 request.user,
@@ -1332,7 +1336,7 @@ class TaskReviewView(APIView):
                 {
                     "previous_status": previous_status,
                     "status": task.status,
-                    "event": "review_requested",
+                    "event": status_event,
                 },
             )
             sync_task_work_session(
@@ -1340,7 +1344,7 @@ class TaskReviewView(APIView):
                 user=request.user,
                 previous_status=previous_status,
                 next_status=task.status,
-                event="review_requested",
+                event=status_event,
             )
         notes = serializer.validated_data.get("notes", "")
         record_task_activity(
