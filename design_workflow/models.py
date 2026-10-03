@@ -111,6 +111,9 @@ class Project(TimestampedModel):
         on_delete=models.PROTECT,
         related_name="managed_projects",
     )
+    collaborators = models.ManyToManyField(
+        settings.AUTH_USER_MODEL, blank=True, related_name="collaborating_projects",
+    )
     start_date = models.DateField(null=True, blank=True)
     target_end_date = models.DateField(null=True, blank=True)
     priority = models.CharField(
@@ -379,7 +382,7 @@ class TaskAttachment(TimestampedModel):
     file = models.FileField(upload_to="design_workflow/task_attachments/%Y/%m/")
     name = models.CharField(max_length=255)
     mime_type = models.CharField(max_length=120, blank=True)
-    size = models.PositiveIntegerField(default=0)
+    size = models.PositiveBigIntegerField(default=0)
     history = HistoricalRecords()
 
     class Meta:
@@ -734,7 +737,7 @@ class ChatMessageAttachment(TimestampedModel):
     file = models.FileField(upload_to="design_workflow/chat_attachments/%Y/%m/")
     name = models.CharField(max_length=255)
     mime_type = models.CharField(max_length=120, blank=True)
-    size = models.PositiveIntegerField(default=0)
+    size = models.PositiveBigIntegerField(default=0)
     history = HistoricalRecords()
 
     class Meta:

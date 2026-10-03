@@ -31,7 +31,7 @@ from .models import (
     TimeEntry,
     TaskComment,
 )
-from .permissions import can_create_task_in_project, can_mutate_task
+from .permissions import can_create_task_in_project, can_manage_project, can_mutate_task
 
 User = get_user_model()
 
@@ -50,9 +50,14 @@ class UserSummarySerializer(serializers.ModelSerializer):
 
 class ProjectSummarySerializer(serializers.ModelSerializer):
     manager = UserSummarySerializer(read_only=True)
+    collaborators = UserSummarySerializer(many=True, read_only=True)
     total_logged_minutes = serializers.IntegerField(read_only=True)
     open_tasks_count = serializers.IntegerField(read_only=True)
     can_work = serializers.SerializerMethodField()
+    can_manage = serializers.SerializerMethodField()
+
+    def get_can_manage(self, obj):
+        return can_manage_project(getattr(self.context.get("request"), "user", None), obj)
 
     def get_can_work(self, obj):
         request = self.context.get("request")
@@ -66,7 +71,7 @@ class ProjectSummarySerializer(serializers.ModelSerializer):
         fields = (
             "id", "name", "description", "manager", "start_date", "target_end_date",
             "priority", "status", "archived", "archived_at", "total_logged_minutes",
-            "open_tasks_count", "can_work", "created_at", "updated_at",
+            "open_tasks_count", "can_work", "can_manage", "collaborators", "created_at", "updated_at",
         )
 
 
@@ -378,6 +383,7 @@ class ProjectDetailSerializer(ProjectSummarySerializer):
 
     def get_tasks(self, obj):
         tasks = obj.tasks.filter(archived=False).select_related("project__manager", "current_assignee").prefetch_related(
+            "project__collaborators",
             "labels",
             "checklists__created_by",
             "checklists__items__created_by",
@@ -490,10 +496,13 @@ class WorkflowAnalyticsSerializer(serializers.Serializer):
 
 class ProjectWriteSerializer(serializers.ModelSerializer):
     manager_id = serializers.PrimaryKeyRelatedField(source="manager", queryset=User.objects.filter(is_active=True))
+    collaborator_ids = serializers.PrimaryKeyRelatedField(
+        source="collaborators", queryset=User.objects.filter(is_active=True), many=True, required=False,
+    )
 
     class Meta:
         model = Project
-        fields = ("name", "description", "manager_id", "start_date", "target_end_date", "priority", "status", "archived")
+        fields = ("name", "description", "manager_id", "collaborator_ids", "start_date", "target_end_date", "priority", "status", "archived")
 
     def validate(self, attrs):
         start_date = attrs.get("start_date", getattr(self.instance, "start_date", None))

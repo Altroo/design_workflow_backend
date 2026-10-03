@@ -56,10 +56,15 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 python manage.py migrate
-python manage.py runserver 8004
+uvicorn design_workflow_backend.asgi:application --host 127.0.0.1 --port 8004 --http h11 --ws wsproto --lifespan off
 ```
 
 On Windows, activate with `.venv\Scripts\activate`.
+
+Use this Uvicorn command when testing uploads, matching the container's HTTP and
+WebSocket transports. Daphne's `runserver` buffers request bodies before Django
+processes them and is not suitable for the 10 GiB attachment limit. See
+[upload deployment notes](deploy/nginx/README.md).
 
 ## Tests
 

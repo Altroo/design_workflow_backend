@@ -97,5 +97,5 @@ class TaskFilter(django_filters.FilterSet):
 
     def filter_my_projects(self, queryset, name, value):
         if _parse_bool(value) is True and self.user is not None:
-            return queryset.filter(project__manager=self.user)
+            return queryset.filter(Q(project__manager=self.user) | Q(project__collaborators=self.user)).distinct()
         return queryset

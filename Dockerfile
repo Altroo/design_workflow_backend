@@ -28,4 +28,4 @@ ENTRYPOINT ["/app/entrypoint.sh"]
 
 EXPOSE 8004
 
-CMD ["daphne", "-b", "0.0.0.0", "-p", "8004", "design_workflow_backend.asgi:application"]
+CMD ["uvicorn", "design_workflow_backend.asgi:application", "--host", "0.0.0.0", "--port", "8004", "--http", "h11", "--ws", "wsproto", "--lifespan", "off"]

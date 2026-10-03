@@ -43,7 +43,7 @@ from .models import (
     TaskStatus,
     TimeEntry,
 )
-from .permissions import IsManager, can_create_task_in_project, can_mutate_task
+from .permissions import IsManager, can_create_task_in_project, can_manage_project, can_mutate_task
 from .serializers import (
     ChatMessageCreateSerializer,
     ChatMessageDecisionSerializer,
@@ -146,6 +146,7 @@ def get_task_queryset():
             "source_chat_message__thread",
         )
         .prefetch_related(
+            "project__collaborators",
             "labels",
             "checklists__created_by",
             "checklists__items__created_by",
@@ -174,6 +175,7 @@ def get_task_detail_queryset():
             "source_chat_message__thread",
         )
         .prefetch_related(
+            "project__collaborators",
             "labels",
             "checklists__created_by",
             "checklists__items__created_by",
@@ -225,20 +227,20 @@ def get_accessible_project_queryset(user, queryset=None):
     if is_manager_user(user):
         return queryset
     assigned_project_ids = Task.objects.filter(current_assignee=user).values("project_id")
-    return queryset.filter(Q(manager=user) | Q(id__in=assigned_project_ids)).distinct()
+    return queryset.filter(Q(manager=user) | Q(collaborators=user) | Q(id__in=assigned_project_ids)).distinct()
 
 
 def get_accessible_task_queryset(user, queryset=None):
     queryset = queryset if queryset is not None else Task.objects.all()
     if is_manager_user(user):
         return queryset
-    return queryset.filter(Q(current_assignee=user) | Q(project__manager=user))
+    return queryset.filter(Q(current_assignee=user) | Q(project__manager=user) | Q(project__collaborators=user)).distinct()
 
 
 def user_can_access_project_context(user, project: Project) -> bool:
     if not user or not user.is_authenticated or not project:
         return False
-    if is_manager_user(user) or project.manager_id == user.id:
+    if can_create_task_in_project(user, project):
         return True
     return Task.objects.filter(project=project, current_assignee=user).exists()
 
@@ -273,13 +275,14 @@ def get_chat_thread_base_queryset():
 
 def get_chat_thread_queryset_for_user(user):
     queryset = get_chat_thread_base_queryset()
-    access_filter = Q(kind=ChatThreadKind.PUBLIC) | Q(participants=user)
+    access_filter = Q(kind=ChatThreadKind.PUBLIC) | Q(kind=ChatThreadKind.PRIVATE, participants=user)
     if is_manager_user(user):
         access_filter |= Q(kind__in=(ChatThreadKind.PROJECT, ChatThreadKind.TASK))
     else:
         assigned_project_ids = Task.objects.filter(current_assignee=user).values("project_id")
         access_filter |= (
             Q(kind=ChatThreadKind.PROJECT, project__manager=user)
+            | Q(kind=ChatThreadKind.PROJECT, project__collaborators=user)
             | Q(kind=ChatThreadKind.PROJECT, project_id__in=assigned_project_ids)
             | Q(kind=ChatThreadKind.TASK, task__current_assignee=user)
             | Q(kind=ChatThreadKind.TASK, task__project__manager=user)
@@ -302,7 +305,11 @@ def can_access_chat_thread(user, thread: ChatThread) -> bool:
 def linked_thread_user_ids(thread: ChatThread) -> set[int]:
     ids = set(thread.participants.values_list("id", flat=True))
     if thread.kind == ChatThreadKind.PROJECT and thread.project_id:
+        # Linked project membership is authoritative; removed collaborators must
+        # not keep receiving messages merely because they once joined the chat.
+        ids = set(thread.participants.filter(Q(role="manager") | Q(is_staff=True) | Q(is_superuser=True)).values_list("id", flat=True))
         ids.add(thread.project.manager_id)
+        ids.update(thread.project.collaborators.filter(is_active=True).values_list("id", flat=True))
         ids.update(
             Task.objects.filter(project=thread.project, current_assignee_id__isnull=False)
             .values_list("current_assignee_id", flat=True)
@@ -317,7 +324,10 @@ def sync_linked_thread_participants(thread: ChatThread, actor=None) -> ChatThrea
     if actor and getattr(actor, "id", None):
         ids.add(actor.id)
     if ids:
-        thread.participants.add(*ids)
+        if thread.kind == ChatThreadKind.PROJECT:
+            thread.participants.set(ids)
+        else:
+            thread.participants.add(*ids)
     return thread
 
 
@@ -389,7 +399,7 @@ def broadcast_chat_event(thread: ChatThread, payload: dict):
     if thread.kind == ChatThreadKind.PUBLIC:
         async_to_sync(channel_layer.group_send)("chat_public", payload)
         return
-    for user_id in thread.participants.values_list("id", flat=True):
+    for user_id in linked_thread_user_ids(thread):
         async_to_sync(channel_layer.group_send)(f"user_{user_id}", payload)
 
 
@@ -684,7 +694,7 @@ class ProjectListCreateView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def get(self, request):
-        queryset = Project.objects.select_related("manager").all()
+        queryset = Project.objects.select_related("manager").prefetch_related("collaborators").all()
         if parse_bool(request.query_params.get("all")) is not True:
             queryset = get_accessible_project_queryset(request.user, queryset)
         archived = parse_bool(request.query_params.get("archived"))
@@ -713,7 +723,7 @@ class ProjectDetailView(APIView):
     @staticmethod
     def get_object(pk: int) -> Project:
         try:
-            return Project.objects.select_related("manager").get(pk=pk)
+            return Project.objects.select_related("manager").prefetch_related("collaborators").get(pk=pk)
         except Project.DoesNotExist as exc:
             raise Http404 from exc
 
@@ -723,13 +733,15 @@ class ProjectDetailView(APIView):
 
     def patch(self, request, pk: int):
         project = self.get_object(pk)
-        if not is_manager_user(request.user) and project.manager_id != request.user.id:
+        if not can_manage_project(request.user, project):
             return Response(status=status.HTTP_403_FORBIDDEN)
         was_archived = project.archived
         serializer = ProjectWriteSerializer(project, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         with transaction.atomic():
             project = serializer.save()
+            for thread in project.chat_threads.filter(kind=ChatThreadKind.PROJECT):
+                sync_linked_thread_participants(thread)
             if project.archived and not was_archived:
                 archived_at = timezone.now()
                 project.archived_at = archived_at
@@ -783,7 +795,7 @@ class TaskListCreateView(APIView):
         project = serializer.validated_data["project"]
         if not can_create_task_in_project(request.user, project):
             return Response(
-                {"project_id": ["Only the project owner can add tasks to this project."]},
+                {"project_id": ["Only the project owner, collaborators, or managers can add tasks to this project."]},
                 status=status.HTTP_403_FORBIDDEN,
             )
         task = serializer.save(created_by=request.user, updated_by=request.user)
@@ -1256,6 +1268,8 @@ class TaskAttachmentsView(APIView):
         upload = request.FILES.get("file")
         if not upload:
             return Response({"file": ["This field is required."]}, status=status.HTTP_400_BAD_REQUEST)
+        if upload.size > settings.MAX_ATTACHMENT_UPLOAD_SIZE:
+            return Response({"file": ["Each attachment must be 10 GB or smaller."]}, status=status.HTTP_400_BAD_REQUEST)
         attachment_name = str(request.data.get("name") or "").strip()
         if not attachment_name:
             return Response({"name": ["Describe what this attachment is about."]}, status=status.HTTP_400_BAD_REQUEST)
@@ -1968,6 +1982,10 @@ class ChatMessagesView(APIView):
         serializer.is_valid(raise_exception=True)
         body = serializer.validated_data.get("body", "")
         files = request.FILES.getlist("files") or ([request.FILES["file"]] if "file" in request.FILES else [])
+        if any(upload.size > settings.MAX_ATTACHMENT_UPLOAD_SIZE for upload in files):
+            return Response({"files": ["Each attachment must be 10 GB or smaller."]}, status=status.HTTP_400_BAD_REQUEST)
+        if sum(upload.size for upload in files) > settings.MAX_ATTACHMENT_REQUEST_SIZE:
+            return Response({"files": ["Send attachments totaling more than 10 GB in separate messages."]}, status=status.HTTP_400_BAD_REQUEST)
         reply_to = serializer.validated_data.get("reply_to")
         if reply_to and reply_to.thread_id != thread.id:
             return Response({"reply_to_id": ["Reply target must belong to this thread."]}, status=status.HTTP_400_BAD_REQUEST)

@@ -21,7 +21,7 @@ services:
     build: .
     container_name: design_workflow_web
     restart: always
-    command: daphne -b 0.0.0.0 -p 8000 design_workflow_backend.asgi:application
+    command: uvicorn design_workflow_backend.asgi:application --host 0.0.0.0 --port 8000 --http h11 --ws wsproto --lifespan off
     ports:
       - "8004:8000"
     env_file:
@@ -91,4 +91,3 @@ volumes:
 networks:
   backend:
     driver: bridge
-

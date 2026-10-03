@@ -145,6 +145,8 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 20971520  # 20MB
 FILE_UPLOAD_MAX_MEMORY_SIZE = 20971520  # 20MB
 MAX_BASE64_IMAGE_SIZE = 15 * 1024 * 1024  # 15MB base64
 MAX_TASK_COVER_IMAGE_SIZE = 8 * 1024 * 1024  # Card images are reduced by the frontend before upload.
+MAX_ATTACHMENT_UPLOAD_SIZE = 10 * 1024 * 1024 * 1024  # 10 GiB per original file.
+MAX_ATTACHMENT_REQUEST_SIZE = MAX_ATTACHMENT_UPLOAD_SIZE  # Send larger chat batches separately.
 
 AUTH_USER_MODEL = "accounts.CustomUser"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
