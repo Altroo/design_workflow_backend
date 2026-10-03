@@ -4,6 +4,7 @@ import unicodedata
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
 from django.db import transaction
@@ -1036,6 +1037,11 @@ class TaskCoverImageView(APIView):
         cover_image = request.FILES.get("cover_image")
         if not cover_image:
             return Response({"cover_image": ["Cover image file is required."]}, status=status.HTTP_400_BAD_REQUEST)
+        if cover_image.size > settings.MAX_TASK_COVER_IMAGE_SIZE:
+            return Response(
+                {"cover_image": ["The card image must be 8 MB or smaller."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         cover_image_label = str(request.data.get("name") or "").strip()
         if not cover_image_label:
             return Response({"name": ["Describe what this image is about."]}, status=status.HTTP_400_BAD_REQUEST)

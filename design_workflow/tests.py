@@ -1317,6 +1317,24 @@ class TestDesignerBoardMediaPermissions:
         task.refresh_from_db()
         assert task.cover_image_label == ""
 
+        settings.MAX_TASK_COVER_IMAGE_SIZE = 16
+        oversized_cover_response = client.post(
+            f"/api/design-workflow/tasks/{task.id}/cover/",
+            {
+                "cover_image": SimpleUploadedFile(
+                    "oversized.png",
+                    b"x" * 17,
+                    content_type="image/png",
+                ),
+                "name": "Oversized cover",
+            },
+            format="multipart",
+        )
+        assert oversized_cover_response.status_code == 400
+        assert oversized_cover_response.data == {
+            "cover_image": ["The card image must be 8 MB or smaller."]
+        }
+
 
 class TestTaskMentions:
     def test_comment_and_description_mentions_notify_tagged_user(self):
