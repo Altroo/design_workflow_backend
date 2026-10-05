@@ -469,7 +469,7 @@ class TestTaskChecklists:
         activity = TaskActivity.objects.filter(task=task, action_type=TaskActivityType.CHECKLIST_UPDATED).latest("created_at")
         assert activity.metadata["action"] == "deleted"
 
-    def test_unassigned_designer_cannot_delete_checklist_group(self):
+    def test_outside_designer_cannot_delete_checklist_group(self):
         manager = make_manager("manager-checklist-denied@test.com")
         designer = make_designer("designer-checklist-denied@test.com")
         project_owner = make_designer("project-owner-checklist-denied@test.com")
@@ -492,10 +492,10 @@ class TestTaskChecklists:
         checklist = TaskChecklist.objects.create(task=task, title="Locked checklist", created_by=manager)
 
         client = APIClient()
-        client.force_authenticate(user=project_owner)
+        client.force_authenticate(user=make_designer("outsider-checklist-denied@test.com"))
         response = client.delete(f"/api/design-workflow/tasks/{task.id}/checklists/{checklist.id}/")
 
-        assert response.status_code == 403
+        assert response.status_code == 404
         assert TaskChecklist.objects.filter(pk=checklist.id).exists()
 
 
@@ -565,6 +565,7 @@ class TestTaskWorkDayAutomation:
         start = timezone.make_aware(datetime(2026, 9, 14, 9, 0))
         end = timezone.make_aware(datetime(2026, 9, 14, 18, 0))
         Task.objects.filter(pk=task.pk).update(work_started_at=start)
+        task.work_sessions.update(started_at=start)
         monkeypatch.setattr("design_workflow.services.timezone.now", lambda: end)
 
         response = client.patch(
@@ -576,8 +577,9 @@ class TestTaskWorkDayAutomation:
         assert response.status_code == 200
         task.refresh_from_db()
         assert task.work_started_at is None
-        assert task.actual_minutes == 480
-        assert task.time_entries.count() == 1
+        assert task.actual_minutes == 960
+        assert task.time_entries.count() == 2
+        assert set(task.time_entries.values_list("user_id", flat=True)) == {manager.pk, designer.pk}
         assert task.time_entries.first().minutes == 480
 
     def test_work_schedule_counts_weekdays_saturday_and_skips_sunday(self):
@@ -1210,7 +1212,7 @@ class TestDesignReviewWorkflow:
 
 
 class TestDesignerBoardMediaPermissions:
-    def test_designer_project_owner_cannot_reorder_another_users_task(self):
+    def test_designer_project_owner_can_reorder_another_users_task(self):
         owner = make_designer("designer-owner-reorder@test.com")
         other_designer = make_designer("designer-assignee-reorder@test.com")
         project = Project.objects.create(
@@ -1240,11 +1242,11 @@ class TestDesignerBoardMediaPermissions:
             format="json",
         )
 
-        assert response.status_code == 403
+        assert response.status_code == 200
         task.refresh_from_db()
-        assert task.status == TaskStatus.TODO
+        assert task.status == TaskStatus.IN_PROGRESS
 
-    def test_only_task_assignee_can_add_and_delete_task_media(self, settings, tmp_path):
+    def test_project_owner_and_task_assignee_can_add_and_delete_task_media(self, settings, tmp_path):
         settings.MEDIA_ROOT = tmp_path
         owner = make_designer("designer-owner-media@test.com")
         other_designer = make_designer("designer-assignee-media@test.com")
@@ -1273,7 +1275,7 @@ class TestDesignerBoardMediaPermissions:
                 "name": "Owner brief",
             },
             format="multipart",
-        ).status_code == 403
+        ).status_code == 201
 
         client.force_authenticate(user=other_designer)
 
@@ -1698,6 +1700,6 @@ class TestWorkflowReports:
         assert response.data["blocked_tasks"] == 1
         assert response.data["blocked_time_minutes"] >= 100
         assert response.data["review_bottlenecks"]["needs_review"] == 1
-        assert response.data["estimate_vs_actual"]["estimated_minutes"] == 1080
+        assert response.data["estimate_vs_actual"]["estimated_minutes"] == 2160  # Two working members per card.
         assert response.data["estimate_vs_actual"]["actual_minutes"] == 600
         assert response.data["capacity"][0]["user"]["id"] == designer.id

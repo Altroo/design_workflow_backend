@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.contrib.admin.sites import AlreadyRegistered
-from simple_history.admin import SimpleHistoryAdmin
+from .admin_realtime import WorkflowRealtimeAdmin
 
 from .models import (
     AttachmentAnnotation,
@@ -75,51 +75,52 @@ def register_history_admin(model, *, display_fields=("id",), list_filter=(), sea
 
 
 @admin.register(Project)
-class ProjectAdmin(SimpleHistoryAdmin):
+class ProjectAdmin(WorkflowRealtimeAdmin):
     list_display = ("name", "manager", "status", "priority", "archived", "target_end_date")
     list_filter = ("status", "priority", "archived")
     search_fields = ("name", "description")
 
 
 @admin.register(Task)
-class TaskAdmin(SimpleHistoryAdmin):
+class TaskAdmin(WorkflowRealtimeAdmin):
+    readonly_fields = ("actual_minutes", "work_started_at")
     list_display = ("title", "project", "current_assignee", "status", "priority", "due_date", "actual_minutes")
     list_filter = ("status", "priority", "project")
     search_fields = ("title", "description", "project__name")
 
 
 @admin.register(TimeEntry)
-class TimeEntryAdmin(SimpleHistoryAdmin):
+class TimeEntryAdmin(WorkflowRealtimeAdmin):
     list_display = ("task", "user", "minutes", "work_date", "created_at")
     list_filter = ("work_date",)
 
 
 @admin.register(TaskComment)
-class TaskCommentAdmin(SimpleHistoryAdmin):
+class TaskCommentAdmin(WorkflowRealtimeAdmin):
     list_display = ("task", "author", "created_at")
     search_fields = ("task__title", "author__email", "body")
 
 
 @admin.register(TaskActivity)
-class TaskActivityAdmin(SimpleHistoryAdmin):
+class TaskActivityAdmin(WorkflowRealtimeAdmin):
     list_display = ("task", "actor", "action_type", "created_at")
     list_filter = ("action_type",)
 
 
 @admin.register(Notification)
-class NotificationAdmin(SimpleHistoryAdmin):
+class NotificationAdmin(WorkflowRealtimeAdmin):
     list_display = ("recipient", "type", "task", "read_at", "snoozed_until", "action_taken_at", "created_at")
     list_filter = ("type", "read_at", "snoozed_until")
 
 
 @admin.register(NotificationPreference)
-class NotificationPreferenceAdmin(SimpleHistoryAdmin):
+class NotificationPreferenceAdmin(WorkflowRealtimeAdmin):
     list_display = ("user", "mentions", "assignments", "review_requests", "due_soon", "digest_frequency")
     list_filter = ("digest_frequency", "mentions", "assignments", "review_requests", "due_soon")
 
 
 @admin.register(SavedView)
-class SavedViewAdmin(SimpleHistoryAdmin):
+class SavedViewAdmin(WorkflowRealtimeAdmin):
     list_display = ("name", "owner", "visibility", "density", "is_default", "updated_at")
     list_filter = ("visibility", "density", "is_default")
     search_fields = ("name", "owner__email")
@@ -127,77 +128,77 @@ class SavedViewAdmin(SimpleHistoryAdmin):
 
 
 @admin.register(TaskLabel)
-class TaskLabelAdmin(SimpleHistoryAdmin):
+class TaskLabelAdmin(WorkflowRealtimeAdmin):
     list_display = ("name", "color", "created_at")
     search_fields = ("name",)
 
 
 @admin.register(TaskChecklistItem)
-class TaskChecklistItemAdmin(SimpleHistoryAdmin):
+class TaskChecklistItemAdmin(WorkflowRealtimeAdmin):
     list_display = ("task", "checklist", "title", "done", "sort_order", "created_by")
     list_filter = ("done",)
     search_fields = ("title", "task__title")
 
 
 @admin.register(TaskChecklist)
-class TaskChecklistAdmin(SimpleHistoryAdmin):
+class TaskChecklistAdmin(WorkflowRealtimeAdmin):
     list_display = ("task", "title", "sort_order", "created_by", "created_at")
     search_fields = ("title", "task__title")
 
 
 @admin.register(TaskAttachment)
-class TaskAttachmentAdmin(SimpleHistoryAdmin):
+class TaskAttachmentAdmin(WorkflowRealtimeAdmin):
     list_display = ("task", "name", "uploaded_by", "size", "created_at")
     search_fields = ("name", "task__title")
 
 
 @admin.register(TaskArtifactVersion)
-class TaskArtifactVersionAdmin(SimpleHistoryAdmin):
+class TaskArtifactVersionAdmin(WorkflowRealtimeAdmin):
     list_display = ("task", "version_number", "approval_state", "uploaded_by", "approved_by", "created_at")
     list_filter = ("approval_state",)
     search_fields = ("task__title", "notes", "attachment__name")
 
 
 @admin.register(AttachmentAnnotation)
-class AttachmentAnnotationAdmin(SimpleHistoryAdmin):
+class AttachmentAnnotationAdmin(WorkflowRealtimeAdmin):
     list_display = ("attachment", "author", "x_percent", "y_percent", "resolved", "created_at")
     list_filter = ("resolved",)
     search_fields = ("body", "attachment__name", "attachment__task__title")
 
 
 @admin.register(ChatThread)
-class ChatThreadAdmin(SimpleHistoryAdmin):
+class ChatThreadAdmin(WorkflowRealtimeAdmin):
     list_display = ("id", "kind", "title", "project", "task", "updated_at")
     list_filter = ("kind",)
     search_fields = ("title", "project__name", "task__title")
 
 
 @admin.register(ChatMessage)
-class ChatMessageAdmin(SimpleHistoryAdmin):
+class ChatMessageAdmin(WorkflowRealtimeAdmin):
     list_display = ("thread", "sender", "decision_at", "edited_at", "created_at")
     search_fields = ("body", "sender__email")
 
 
 @admin.register(ChatMessageAttachment)
-class ChatMessageAttachmentAdmin(SimpleHistoryAdmin):
+class ChatMessageAttachmentAdmin(WorkflowRealtimeAdmin):
     list_display = ("message", "name", "size", "created_at")
     search_fields = ("name",)
 
 
 @admin.register(ChatMessageEdit)
-class ChatMessageEditAdmin(SimpleHistoryAdmin):
+class ChatMessageEditAdmin(WorkflowRealtimeAdmin):
     list_display = ("message", "edited_by", "created_at")
     search_fields = ("previous_body", "new_body", "edited_by__email")
 
 
 @admin.register(ChatMessageReaction)
-class ChatMessageReactionAdmin(SimpleHistoryAdmin):
+class ChatMessageReactionAdmin(WorkflowRealtimeAdmin):
     list_display = ("message", "user", "emoji", "created_at")
     list_filter = ("emoji",)
 
 
 @admin.register(ChatMessageReminder)
-class ChatMessageReminderAdmin(SimpleHistoryAdmin):
+class ChatMessageReminderAdmin(WorkflowRealtimeAdmin):
     list_display = ("message", "task", "created_by", "remind_at", "done_at")
     list_filter = ("done_at", "remind_at")
 

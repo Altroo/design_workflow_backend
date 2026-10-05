@@ -224,11 +224,19 @@ CELERY_RESULT_BACKEND = f"redis://{REDIS_HOST}:{REDIS_PORT}/1"
 CELERY_BEAT_SCHEDULE = {
     "design-workflow-due-task-notifications": {
         "task": "design_workflow.tasks.generate_due_task_notifications",
-        "schedule": crontab(minute=0, hour=7),
+        "schedule": crontab(minute="*/5"),
     },
     "design-workflow-notification-digests": {
         "task": "design_workflow.tasks.generate_notification_digests",
         "schedule": crontab(minute=30, hour=7),
+    },
+    "design-workflow-chat-reminders": {
+        "task": "design_workflow.tasks.deliver_due_chat_reminders",
+        "schedule": 60.0,
+    },
+    "design-workflow-snoozed-notifications": {
+        "task": "design_workflow.tasks.resurface_snoozed_notifications",
+        "schedule": 60.0,
     },
 }
 

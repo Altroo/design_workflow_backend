@@ -20,7 +20,7 @@ def can_mutate_task(user, task) -> bool:
         return False
     if user.role == "manager" or user.is_staff or getattr(user, "is_superuser", False):
         return True
-    return task.current_assignee_id == user.id
+    return task.current_assignee_id == user.id or can_create_task_in_project(user, task.project)
 
 
 def can_manage_project(user, project) -> bool:

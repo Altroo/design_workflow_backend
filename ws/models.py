@@ -1,7 +1,7 @@
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
-from django.db import models
-from django.db.models.signals import post_save
+from django.db import models, transaction
+from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 from django.utils.translation import gettext_lazy as _
 
@@ -18,16 +18,15 @@ class WsMaintenanceState(models.Model):
 
 
 @receiver(post_save, sender=WsMaintenanceState)
+@receiver(post_delete, sender=WsMaintenanceState)
 def broadcast_maintenance_state(sender, instance, **kwargs):
-    channel_layer = get_channel_layer()
-    if channel_layer is None:
-        return
-
-    event = {
-        "type": "receive_group_message",
-        "message": {
-            "type": "MAINTENANCE",
-            "maintenance": bool(instance.maintenance),
-        },
-    }
-    async_to_sync(channel_layer.group_send)(MAINTENANCE_GROUP, event)
+    def publish():
+        channel_layer = get_channel_layer()
+        if channel_layer is None:
+            return
+        latest = WsMaintenanceState.objects.order_by("-updated_at", "-pk").first()
+        async_to_sync(channel_layer.group_send)(MAINTENANCE_GROUP, {
+            "type": "receive_group_message",
+            "message": {"type": "MAINTENANCE", "maintenance": bool(latest and latest.maintenance)},
+        })
+    transaction.on_commit(publish, robust=True)

@@ -638,17 +638,11 @@ def test_resize_avatar_saves_and_sends_event(monkeypatch):
     img.save(buf, format="PNG")
     buf.seek(0)
 
-    monkeypatch.setattr("account.tasks.sync_to_async", lambda f: f)
-    monkeypatch.setattr(
-        "account.tasks.async_to_sync",
-        lambda f: (lambda *a, **kw: f(*a, **kw)),
-    )
-
     calls: list = []
 
     class FakeChannelLayer:
         @staticmethod
-        def group_send(group, event):
+        async def group_send(group, event):
             calls.append((group, event))
 
     monkeypatch.setattr("account.tasks.get_channel_layer", lambda: FakeChannelLayer())
@@ -657,8 +651,10 @@ def test_resize_avatar_saves_and_sends_event(monkeypatch):
     user.refresh_from_db()
     assert user.avatar is not None
     assert len(calls) == 1
+    assert calls[0][0] == f"user_{user.pk}"
     assert calls[0][1]["type"] == "receive_group_message"
     assert calls[0][1]["message"]["type"] == "USER_AVATAR"
+    assert calls[0][1]["message"]["pk"] == user.pk
 
 
 @patch("account.tasks.start_deleting_expired_codes.apply_async")

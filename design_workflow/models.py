@@ -483,6 +483,15 @@ class AttachmentAnnotation(TimestampedModel):
         return f"{self.attachment_id}:{self.x_percent},{self.y_percent}"
 
 
+class TaskWorkSession(models.Model):
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="work_sessions")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="design_work_sessions")
+    started_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=("task", "user"), name="unique_task_worker_session")]
+
+
 class TimeEntry(TimestampedModel):
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="time_entries")
     user = models.ForeignKey(
@@ -806,6 +815,7 @@ class ChatMessageReminder(TimestampedModel):
     remind_at = models.DateTimeField(null=True, blank=True, db_index=True)
     note = models.CharField(max_length=255, blank=True)
     done_at = models.DateTimeField(null=True, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True, db_index=True)
     history = HistoricalRecords()
 
     class Meta:

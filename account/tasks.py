@@ -2,7 +2,7 @@ from io import BytesIO
 from random import shuffle
 
 from PIL import Image, ImageDraw, ImageFont
-from asgiref.sync import async_to_sync, sync_to_async
+from asgiref.sync import async_to_sync
 from celery.utils.log import get_task_logger
 from channels.layers import get_channel_layer
 from django.core.exceptions import ObjectDoesNotExist
@@ -176,8 +176,8 @@ def resize_avatar(self, object_pk: int, avatar: BytesIO | None):
             },
         }
         channel_layer = get_channel_layer()
-        async_send = sync_to_async(channel_layer.group_send)
-        async_to_sync(async_send)(str(user.pk), event)
+        if channel_layer is not None:
+            async_to_sync(channel_layer.group_send)(f"user_{user.pk}", event)
     except ObjectDoesNotExist:
         logger.error(
             f"Utilisateur {object_pk} introuvable pour le redimensionnement de l'avatar"

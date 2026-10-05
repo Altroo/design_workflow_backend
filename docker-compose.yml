@@ -84,6 +84,24 @@ services:
       - ./media:/app/media
       - ./static:/app/static
 
+  beat:
+    build: .
+    container_name: design_workflow_beat
+    restart: always
+    command: celery -A design_workflow_backend beat --loglevel=info --schedule=/tmp/design-workflow-celerybeat
+    env_file:
+      - .env
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - backend
+
 volumes:
   design_workflow_db_data:
   redis_data:

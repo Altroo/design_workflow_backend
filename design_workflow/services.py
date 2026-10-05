@@ -3,10 +3,12 @@ from datetime import datetime, time, timedelta
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.contrib.auth import get_user_model
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
 from .models import Notification, TaskActivity, TaskActivityType, TaskStatus, TimeEntry
+from .permissions import can_mutate_task
 
 User = get_user_model()
 WORK_DAY_MINUTES = 8 * 60
@@ -23,22 +25,38 @@ WORK_SCHEDULE = {
 
 
 def broadcast_to_users(user_ids: list[int], message: dict) -> None:
-    channel_layer = get_channel_layer()
-    if channel_layer is None:
-        return
+    recipients = {user_id for user_id in user_ids if user_id}
+    def send():
+        channel_layer = get_channel_layer()
+        if channel_layer is not None:
+            for user_id in recipients:
+                async_to_sync(channel_layer.group_send)(
+                    f"user_{user_id}",
+                    {"type": "receive_group_message", "message": message},
+                )
+    # A connected client must never refetch uncommitted or rolled-back data.
+    transaction.on_commit(send, robust=True)
 
-    for user_id in {user_id for user_id in user_ids if user_id}:
-        async_to_sync(channel_layer.group_send)(
-            f"user_{user_id}",
-            {"type": "receive_group_message", "message": message},
-        )
+
+def broadcast_workflow_event(scope: str, *, recipients=None) -> None:
+    message = {"type": "WORKFLOW_EVENT", "scope": scope}
+    if recipients is not None:
+        broadcast_to_users(recipients, message)
+    else:
+        broadcast_workspace_message(message)
+
+
+def broadcast_workspace_message(message: dict) -> None:
+    def send():
+        channel_layer = get_channel_layer()
+        if channel_layer is not None:
+            async_to_sync(channel_layer.group_send)("workflow", {"type": "receive_group_message", "message": message})
+    transaction.on_commit(send, robust=True)
 
 
 def broadcast_task_event(task, event_type: str, *, recipients: list[int] | None = None) -> None:
-    if recipients is None:
-        recipients = list(
-            User.objects.filter(is_active=True).values_list("id", flat=True)
-        )
+    # All authenticated users may view the board, including read-only viewers
+    # and managers who are not card members. Mutation rights remain unchanged.
 
     message = {
         "type": "TASK_EVENT",
@@ -48,7 +66,7 @@ def broadcast_task_event(task, event_type: str, *, recipients: list[int] | None 
         "status": task.status,
         "assignee_id": task.current_assignee_id,
     }
-    broadcast_to_users(recipients, message)
+    broadcast_workspace_message(message)
 
 
 def record_task_activity(task, actor, action_type: str, metadata: dict | None = None):
@@ -110,31 +128,8 @@ def count_working_minutes(start, end) -> int:
 
 
 def sync_task_work_session(task, *, user, previous_status: str, next_status: str, event: str):
-    if previous_status == next_status:
-        return None
-
-    if previous_status != TaskStatus.IN_PROGRESS and next_status == TaskStatus.IN_PROGRESS:
-        if task.work_started_at is None:
-            task.work_started_at = timezone.now()
-            task.save(update_fields=["work_started_at", "updated_at"])
-        return None
-
-    if previous_status == TaskStatus.IN_PROGRESS and next_status != TaskStatus.IN_PROGRESS:
-        if task.work_started_at is None:
-            return None
-        closed_at = timezone.now()
-        worked_minutes = count_working_minutes(task.work_started_at, closed_at)
-        task.work_started_at = None
-        task.save(update_fields=["work_started_at", "updated_at"])
-        return log_automatic_time_entry(
-            task,
-            user=user,
-            minutes=worked_minutes,
-            note="Automatic workflow entry based on scheduled studio hours.",
-            event=event,
-        )
-
-    return None
+    from .time_tracking import reconcile_task_work_sessions
+    return reconcile_task_work_sessions(task, event=event)
 
 
 def create_notification(
@@ -164,9 +159,10 @@ def create_notification(
 
 
 def mark_notification_read(notification: Notification) -> Notification:
-    if notification.read_at is None:
+    if notification.read_at is None or notification.snoozed_until is not None:
         notification.read_at = timezone.now()
-        notification.save(update_fields=["read_at"])
+        notification.snoozed_until = None
+        notification.save(update_fields=["read_at", "snoozed_until"])
         broadcast_to_users(
             [notification.recipient_id],
             {
@@ -192,10 +188,14 @@ def notification_exists_for_today(*, recipient, notification_type: str, task=Non
 
 def related_task_user_ids(task) -> list[int]:
     ids = [task.project.manager_id]
+    ids.extend(member.id for member in task.project.collaborators.all() if member.is_active)
     if task.current_assignee_id:
         ids.append(task.current_assignee_id)
     commenter_ids = task.comments.values_list("author_id", flat=True)
     time_logger_ids = task.time_entries.values_list("user_id", flat=True)
     ids.extend(commenter_ids)
     ids.extend(time_logger_ids)
-    return [user_id for user_id in set(ids) if user_id]
+    return [
+        member.id for member in User.objects.filter(id__in=set(ids), is_active=True)
+        if can_mutate_task(member, task)
+    ]

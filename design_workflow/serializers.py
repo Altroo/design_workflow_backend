@@ -36,6 +36,23 @@ from .permissions import can_create_task_in_project, can_manage_project, can_mut
 User = get_user_model()
 
 
+def live_minutes(context, *, task_id=None, project_id=None):
+    # One read-only snapshot per serialization tree, reused by nested cards.
+    if "_active_minutes" not in context:
+        from .time_tracking import active_session_minutes
+        # Read closed totals for the whole tree before active sessions. Reading
+        # each project's total later could count a just-closed session twice.
+        context["_logged_projects"] = dict(TimeEntry.objects.values("task__project_id").annotate(
+            total=Sum("minutes"),
+        ).values_list("task__project_id", "total"))
+        context["_logged_tasks"] = dict(Task.objects.values_list("pk", "actual_minutes"))
+        context["_active_minutes"] = active_session_minutes()
+        context["_active_projects"] = dict(Task.objects.filter(work_sessions__isnull=False).values_list("pk", "project_id"))
+    return sum(minutes for (card_id, _user_id, _date), minutes in context["_active_minutes"].items()
+               if (task_id is None or card_id == task_id)
+               and (project_id is None or context["_active_projects"].get(card_id) == project_id))
+
+
 class UserSummarySerializer(serializers.ModelSerializer):
     avatar = serializers.SerializerMethodField()
 
@@ -51,7 +68,11 @@ class UserSummarySerializer(serializers.ModelSerializer):
 class ProjectSummarySerializer(serializers.ModelSerializer):
     manager = UserSummarySerializer(read_only=True)
     collaborators = UserSummarySerializer(many=True, read_only=True)
-    total_logged_minutes = serializers.IntegerField(read_only=True)
+    total_logged_minutes = serializers.SerializerMethodField()
+
+    def get_total_logged_minutes(self, obj):
+        active = live_minutes(self.context, project_id=obj.pk)
+        return self.context["_logged_projects"].get(obj.pk, 0) + active
     open_tasks_count = serializers.IntegerField(read_only=True)
     can_work = serializers.SerializerMethodField()
     can_manage = serializers.SerializerMethodField()
@@ -179,6 +200,12 @@ class TaskAttachmentSerializer(serializers.ModelSerializer):
 
 
 class TaskCardSerializer(serializers.ModelSerializer):
+    actual_minutes = serializers.SerializerMethodField()
+
+    def get_actual_minutes(self, obj):
+        active = live_minutes(self.context, task_id=obj.pk)
+        return self.context["_logged_tasks"].get(obj.pk, obj.actual_minutes) + active
+
     project = ProjectSummarySerializer(read_only=True)
     current_assignee = UserSummarySerializer(read_only=True)
     review_requested_by = UserSummarySerializer(read_only=True)
@@ -347,7 +374,10 @@ class TaskDetailSerializer(TaskCardSerializer):
     recent_activity = serializers.SerializerMethodField()
     time_entries = serializers.SerializerMethodField()
     contributors = serializers.SerializerMethodField()
-    total_logged_minutes = serializers.IntegerField(source="actual_minutes", read_only=True)
+    total_logged_minutes = serializers.SerializerMethodField()
+
+    def get_total_logged_minutes(self, obj):
+        return self.get_actual_minutes(obj)
 
     class Meta(TaskCardSerializer.Meta):
         fields = TaskCardSerializer.Meta.fields + (
@@ -531,6 +561,14 @@ class TaskWriteSerializer(serializers.ModelSerializer):
             "source_chat_message_id",
         )
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        if request and request.user.is_authenticated:
+            # Match the card's private-label view when checking edit baselines.
+            data["label_ids"] = list(instance.labels.filter(created_by=request.user).values_list("pk", flat=True))
+        return data
+
     def validate(self, attrs):
         due_date = attrs.get("due_date", getattr(self.instance, "due_date", None))
         project = attrs.get("project", getattr(self.instance, "project", None))
@@ -678,7 +716,7 @@ class ChatReminderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ChatMessageReminder
-        fields = ("id", "task", "created_by", "remind_at", "note", "done_at", "created_at", "updated_at")
+        fields = ("id", "task", "created_by", "remind_at", "note", "done_at", "delivered_at", "created_at", "updated_at")
 
 
 class ChatEditSerializer(serializers.ModelSerializer):

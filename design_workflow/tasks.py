@@ -1,51 +1,116 @@
 from datetime import timedelta
 
 from celery import shared_task
+from django.contrib.auth import get_user_model
 from django.core.mail import send_mail
-from django.db.models import Count
+from django.db import transaction
+from django.db.models import Count, Q
 from django.utils import timezone
 
-from .models import Notification, NotificationDigestFrequency, NotificationPreference, NotificationType, Task, TaskStatus
-from .services import create_notification, notification_exists_for_today
+from .models import ChatMessageReminder, Notification, NotificationDigestFrequency, NotificationPreference, NotificationType, Task, TaskStatus
+from .services import broadcast_to_users, create_notification, notification_exists_for_today
 
 
 @shared_task
 def generate_due_task_notifications():
     today = timezone.localdate()
     due_soon_date = today + timedelta(days=2)
-    tasks = Task.objects.select_related("project", "current_assignee").exclude(
-        status=TaskStatus.DONE
+    tasks = Task.objects.filter(
+        Q(due_date=due_soon_date) | Q(due_date__lt=today),
+        archived=False, project__archived=False,
+    ).exclude(status=TaskStatus.DONE)
+    created_count = 0
+    for task_id in tasks.values_list("pk", flat=True).iterator():
+        # Serialize overlapping scheduler runs before checking today's notices.
+        with transaction.atomic():
+            task = tasks.select_for_update(of=("self",)).select_related("project").filter(pk=task_id).first()
+            if task is None:
+                continue
+            if task.due_date == due_soon_date:
+                notification_type = NotificationType.TASK_DUE_SOON
+            elif task.due_date and task.due_date < today:
+                notification_type = NotificationType.TASK_OVERDUE
+            else:
+                continue
+            member_ids = {task.project.manager_id, task.current_assignee_id}
+            member_ids.update(task.project.collaborators.values_list("pk", flat=True))
+            opted_out = NotificationPreference.objects.filter(due_soon=False).values("user_id")
+            recipients = get_user_model().objects.filter(pk__in=member_ids, is_active=True).exclude(pk__in=opted_out)
+            for recipient in recipients:
+                if notification_exists_for_today(recipient=recipient, notification_type=notification_type, task=task):
+                    continue
+                create_notification(
+                    recipient=recipient,
+                    notification_type=notification_type,
+                    task=task,
+                    project=task.project,
+                    payload={"due_date": task.due_date.isoformat()},
+                )
+                created_count += 1
+    return created_count
+
+
+@shared_task
+def deliver_due_chat_reminders():
+    """Deliver explicit personal reminders once, without marking them done."""
+    from .views import broadcast_chat_event, can_access_chat_thread
+
+    now = timezone.now()
+    pending = ChatMessageReminder.objects.filter(
+        remind_at__lte=now, delivered_at__isnull=True, done_at__isnull=True,
+        created_by__is_active=True, message__deleted_at__isnull=True,
     )
-
-    for task in tasks:
-        if not task.current_assignee_id:
-            continue
-
-        if task.due_date == due_soon_date and not notification_exists_for_today(
-            recipient=task.current_assignee,
-            notification_type=NotificationType.TASK_DUE_SOON,
-            task=task,
-        ):
+    delivered_count = 0
+    for reminder_id in pending.values_list("pk", flat=True).iterator():
+        with transaction.atomic():
+            reminder = pending.select_for_update(of=("self",)).select_related(
+                "created_by", "message__thread__project", "message__thread__task__project", "task__project",
+            ).filter(pk=reminder_id).first()
+            if reminder is None:
+                continue
+            thread = reminder.message.thread
+            if not can_access_chat_thread(reminder.created_by, thread):
+                continue
+            task = reminder.task
             create_notification(
-                recipient=task.current_assignee,
-                notification_type=NotificationType.TASK_DUE_SOON,
+                recipient=reminder.created_by,
+                notification_type=NotificationType.CHAT_MESSAGE,
                 task=task,
-                project=task.project,
-                payload={"due_date": task.due_date.isoformat()},
+                project=task.project if task else thread.project,
+                payload={
+                    "kind": "reminder", "reminder_id": reminder.pk,
+                    "thread_id": thread.pk, "message_id": reminder.message_id,
+                    "title": "Rappel de message", "note": reminder.note,
+                },
             )
+            reminder.delivered_at = now
+            reminder.save(update_fields=["delivered_at", "updated_at"])
+            broadcast_chat_event(thread, {
+                "type": "chat.reminder", "thread_id": thread.pk,
+                "message_id": reminder.message_id, "reminder_id": reminder.pk,
+            })
+            delivered_count += 1
+    return delivered_count
 
-        if task.due_date and task.due_date < today and not notification_exists_for_today(
-            recipient=task.current_assignee,
-            notification_type=NotificationType.TASK_OVERDUE,
-            task=task,
-        ):
-            create_notification(
-                recipient=task.current_assignee,
-                notification_type=NotificationType.TASK_OVERDUE,
-                task=task,
-                project=task.project,
-                payload={"due_date": task.due_date.isoformat()},
-            )
+
+@shared_task
+def resurface_snoozed_notifications():
+    """Restore a snoozed notice and its live unread badge when its time arrives."""
+    pending = Notification.objects.filter(snoozed_until__lte=timezone.now(), recipient__is_active=True)
+    resurfaced_count = 0
+    for notification_id in pending.values_list("pk", flat=True).iterator():
+        with transaction.atomic():
+            notification = pending.select_for_update(of=("self",)).filter(pk=notification_id).first()
+            if notification is None:
+                continue
+            notification.snoozed_until = None
+            notification.read_at = None
+            notification.save(update_fields=["snoozed_until", "read_at"])
+            broadcast_to_users([notification.recipient_id], {
+                "type": "NOTIFICATION", "event": "resurfaced", "notification_id": notification.pk,
+            })
+            resurfaced_count += 1
+    return resurfaced_count
 
 
 def digest_window_for(frequency: str):
@@ -168,5 +233,8 @@ def generate_notification_digests(frequency: str | None = None, send_email: bool
                 "email_sent_at": timezone.now().isoformat(),
             }
             notification.save(update_fields=["payload"])
+            broadcast_to_users([notification.recipient_id], {
+                "type": "NOTIFICATION", "event": "updated", "notification_id": notification.pk,
+            })
         created_count += 1
     return created_count

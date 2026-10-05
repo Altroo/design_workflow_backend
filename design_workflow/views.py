@@ -10,10 +10,11 @@ from django.core.files.base import ContentFile
 from django.db import transaction
 from django.db.models import Max, Q, Sum
 from django.http import Http404
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import parsers, permissions, status
 from rest_framework.response import Response
-from rest_framework.views import APIView
+from .realtime import WorkflowAPIView as APIView
 
 from .filters import TaskFilter
 from .models import (
@@ -44,6 +45,7 @@ from .models import (
     TimeEntry,
 )
 from .permissions import IsManager, can_create_task_in_project, can_manage_project, can_mutate_task
+from .time_tracking import active_session_minutes, reconcile_task_work_sessions
 from .serializers import (
     ChatMessageCreateSerializer,
     ChatMessageDecisionSerializer,
@@ -246,13 +248,7 @@ def user_can_access_project_context(user, project: Project) -> bool:
 
 
 def user_can_access_task_context(user, task: Task) -> bool:
-    if not user or not user.is_authenticated or not task:
-        return False
-    return bool(
-        is_manager_user(user)
-        or task.current_assignee_id == user.id
-        or task.project.manager_id == user.id
-    )
+    return bool(task and can_mutate_task(user, task))
 
 
 def get_chat_thread_base_queryset():
@@ -264,6 +260,7 @@ def get_chat_thread_base_queryset():
         "task__project__manager",
         "task__current_assignee",
     ).prefetch_related(
+        "task__project__collaborators",
         "participants",
         "messages__sender",
         "messages__attachments",
@@ -286,6 +283,7 @@ def get_chat_thread_queryset_for_user(user):
             | Q(kind=ChatThreadKind.PROJECT, project_id__in=assigned_project_ids)
             | Q(kind=ChatThreadKind.TASK, task__current_assignee=user)
             | Q(kind=ChatThreadKind.TASK, task__project__manager=user)
+            | Q(kind=ChatThreadKind.TASK, task__project__collaborators=user)
         )
     return queryset.filter(access_filter).distinct()
 
@@ -307,7 +305,7 @@ def linked_thread_user_ids(thread: ChatThread) -> set[int]:
     if thread.kind == ChatThreadKind.PROJECT and thread.project_id:
         # Linked project membership is authoritative; removed collaborators must
         # not keep receiving messages merely because they once joined the chat.
-        ids = set(thread.participants.filter(Q(role="manager") | Q(is_staff=True) | Q(is_superuser=True)).values_list("id", flat=True))
+        ids = set(User.objects.filter(is_active=True).filter(Q(role="manager") | Q(is_staff=True) | Q(is_superuser=True)).values_list("id", flat=True))
         ids.add(thread.project.manager_id)
         ids.update(thread.project.collaborators.filter(is_active=True).values_list("id", flat=True))
         ids.update(
@@ -315,8 +313,12 @@ def linked_thread_user_ids(thread: ChatThread) -> set[int]:
             .values_list("current_assignee_id", flat=True)
         )
     if thread.kind == ChatThreadKind.TASK and thread.task_id:
-        ids.update(related_task_user_ids(thread.task))
-    return {user_id for user_id in ids if user_id}
+        # Do not retain task-chat access solely from historical participation.
+        managers = set(User.objects.filter(is_active=True).filter(Q(role="manager") | Q(is_staff=True) | Q(is_superuser=True)).values_list("id", flat=True))
+        candidates = ids | set(related_task_user_ids(thread.task)) | managers
+        ids = {user.id for user in User.objects.filter(id__in=candidates, is_active=True)
+               if can_mutate_task(user, thread.task)}
+    return set(User.objects.filter(pk__in=ids, is_active=True).values_list("id", flat=True))
 
 
 def sync_linked_thread_participants(thread: ChatThread, actor=None) -> ChatThread:
@@ -324,7 +326,7 @@ def sync_linked_thread_participants(thread: ChatThread, actor=None) -> ChatThrea
     if actor and getattr(actor, "id", None):
         ids.add(actor.id)
     if ids:
-        if thread.kind == ChatThreadKind.PROJECT:
+        if thread.kind in {ChatThreadKind.PROJECT, ChatThreadKind.TASK}:
             thread.participants.set(ids)
         else:
             thread.participants.add(*ids)
@@ -341,9 +343,12 @@ def chat_thread_recipients(thread: ChatThread, sender):
     return User.objects.filter(id__in=recipient_ids, is_active=True)
 
 
-def get_task_or_404(pk: int, user=None) -> Task:
+def get_task_or_404(pk: int, user=None, *, lock=True) -> Task:
     try:
-        task = get_task_detail_queryset().get(pk=pk)
+        queryset = get_task_detail_queryset()
+        if lock and transaction.get_connection().in_atomic_block:
+            queryset = queryset.select_for_update(of=("self",))
+        task = queryset.get(pk=pk)
     except Task.DoesNotExist as exc:
         raise Http404 from exc
     if user is not None and not user_can_access_task_context(user, task):
@@ -393,14 +398,17 @@ def get_chat_message_or_404(request, pk: int) -> ChatMessage:
 
 
 def broadcast_chat_event(thread: ChatThread, payload: dict):
-    channel_layer = get_channel_layer()
-    if not channel_layer:
-        return
-    if thread.kind == ChatThreadKind.PUBLIC:
-        async_to_sync(channel_layer.group_send)("chat_public", payload)
-        return
-    for user_id in linked_thread_user_ids(thread):
-        async_to_sync(channel_layer.group_send)(f"user_{user_id}", payload)
+    if payload.get("message_id") and "message" not in payload:
+        message = get_chat_message_queryset().filter(pk=payload["message_id"]).first()
+        if message:
+            payload = {**payload, "message": ChatMessageSerializer(message).data}
+    groups = ["chat_public"] if thread.kind == ChatThreadKind.PUBLIC else [f"user_{user_id}" for user_id in linked_thread_user_ids(thread)]
+    def send():
+        channel_layer = get_channel_layer()
+        if channel_layer:
+            for group in groups:
+                async_to_sync(channel_layer.group_send)(group, payload)
+    transaction.on_commit(send, robust=True)
 
 
 def broadcast_chat_message(message, request=None):
@@ -665,9 +673,14 @@ class DashboardSummaryView(APIView):
     permission_classes = (IsManager,)
 
     def get(self, request):
-        today = timezone.localdate()
+        now = timezone.now()
+        today = timezone.localdate(now)
         week_start = today - timedelta(days=today.weekday())
-        tasks = Task.objects.select_related("project").filter(archived=False)
+        tasks = Task.objects.select_related("project").filter(archived=False, project__archived=False)
+        logged_minutes = int(TimeEntry.objects.filter(
+            work_date__gte=week_start, task__archived=False, task__project__archived=False,
+        ).aggregate(total=Sum("minutes"))["total"] or 0)
+        live_minutes = sum(active_session_minutes(start_date=week_start, now=now).values())
         payload = {
             "active_projects": Project.objects.filter(
                 archived=False,
@@ -679,9 +692,7 @@ class DashboardSummaryView(APIView):
             "blocked_tasks": tasks.filter(status=TaskStatus.BLOCKED).count(),
             "overdue_tasks": tasks.filter(due_date__lt=today).exclude(status=TaskStatus.DONE).count(),
             "completed_tasks": tasks.filter(status=TaskStatus.DONE).count(),
-            "week_logged_minutes": int(
-                TimeEntry.objects.filter(work_date__gte=week_start, task__archived=False).aggregate(total=Sum("minutes"))["total"] or 0
-            ),
+            "week_logged_minutes": logged_minutes + live_minutes,
             "recent_reassignments": tasks.filter(
                 activities__action_type=TaskActivityType.REASSIGNED,
                 activities__created_at__date__gte=week_start,
@@ -723,7 +734,10 @@ class ProjectDetailView(APIView):
     @staticmethod
     def get_object(pk: int) -> Project:
         try:
-            return Project.objects.select_related("manager").prefetch_related("collaborators").get(pk=pk)
+            queryset = Project.objects.select_related("manager").prefetch_related("collaborators")
+            if transaction.get_connection().in_atomic_block:
+                queryset = queryset.select_for_update(of=("self",))
+            return queryset.get(pk=pk)
         except Project.DoesNotExist as exc:
             raise Http404 from exc
 
@@ -735,19 +749,24 @@ class ProjectDetailView(APIView):
         project = self.get_object(pk)
         if not can_manage_project(request.user, project):
             return Response(status=status.HTTP_403_FORBIDDEN)
+        from .concurrency import check_expected_values
+        check_expected_values(request, project, ProjectWriteSerializer)
         was_archived = project.archived
         serializer = ProjectWriteSerializer(project, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         with transaction.atomic():
             project = serializer.save()
-            for thread in project.chat_threads.filter(kind=ChatThreadKind.PROJECT):
+            project_tasks = list(project.tasks.select_for_update(of=("self",)).order_by("pk"))
+            for thread in get_chat_thread_base_queryset().filter(
+                Q(kind=ChatThreadKind.PROJECT, project=project) | Q(kind=ChatThreadKind.TASK, task__project=project)
+            ):
                 sync_linked_thread_participants(thread)
             if project.archived and not was_archived:
                 archived_at = timezone.now()
                 project.archived_at = archived_at
                 project.status = ProjectStatus.ARCHIVED
                 project.save(update_fields=["archived_at", "status", "updated_at"])
-                tasks_to_archive = list(project.tasks.select_related("project").filter(archived=False))
+                tasks_to_archive = [task for task in project_tasks if not task.archived]
                 for task in tasks_to_archive:
                     task.archived = True
                     task.archived_at = archived_at
@@ -765,6 +784,8 @@ class ProjectDetailView(APIView):
                 if project.status == ProjectStatus.ARCHIVED:
                     project.status = ProjectStatus.PLANNED
                 project.save(update_fields=["archived_at", "status", "updated_at"])
+            for task in project_tasks:
+                reconcile_task_work_sessions(task, event="project_updated")
         return Response(
             ProjectSummarySerializer(project, context={"request": request}).data,
             status=status.HTTP_200_OK,
@@ -789,6 +810,11 @@ class TaskListCreateView(APIView):
         data = request.data.copy()
         serializer = TaskWriteSerializer(data=data, context={"request": request})
         serializer.is_valid(raise_exception=True)
+        # Same lock order as project archival: project, then cards. Revalidate
+        # after waiting so an archive cannot miss an incoming/new card.
+        project = get_object_or_404(Project.objects.select_for_update(), pk=serializer.validated_data["project"].pk)
+        serializer.validated_data["project"] = project
+        serializer.validate(serializer.validated_data)
         source_message = serializer.validated_data.get("source_chat_message")
         if source_message and (source_message.deleted_at or not can_access_chat_thread(request.user, source_message.thread)):
             return Response({"source_chat_message_id": ["Source message is not available."]}, status=status.HTTP_400_BAD_REQUEST)
@@ -799,6 +825,7 @@ class TaskListCreateView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
         task = serializer.save(created_by=request.user, updated_by=request.user)
+        reconcile_task_work_sessions(task, event="created")
         notify_task_mentions(body=task.description, actor=request.user, task=task, field="description")
         activity_metadata = {"status": task.status, "assignee_id": task.current_assignee_id}
         if task.source_chat_message_id:
@@ -826,16 +853,23 @@ class TaskDetailView(APIView):
         return Response(TaskDetailSerializer(get_task_or_404(pk), context={"request": request}).data, status=status.HTTP_200_OK)
 
     def patch(self, request, pk: int):
+        destination = None
+        if "project_id" in request.data:
+            project_field = TaskWriteSerializer().fields["project_id"]
+            requested_project = project_field.run_validation(request.data["project_id"])
+            destination = get_object_or_404(Project.objects.select_for_update(), pk=requested_project.pk)
         task = get_task_or_404(pk)
         if not can_mutate_task(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
+        from .concurrency import check_expected_values
+        check_expected_values(request, task, TaskWriteSerializer)
         previous = {
             "status": task.status,
             "priority": task.priority,
             "due_date": task.due_date.isoformat() if task.due_date else None,
             "assignee_id": task.current_assignee_id,
             "label_ids": list(task.labels.values_list("id", flat=True)),
-            "description_mentions": {user.id for user in extract_task_mentions(task.description, request.user)},
+            "description_mentions": [user.id for user in extract_task_mentions(task.description, request.user)],
         }
         serializer = TaskWriteSerializer(
             task,
@@ -844,10 +878,16 @@ class TaskDetailView(APIView):
             context={"request": request},
         )
         serializer.is_valid(raise_exception=True)
+        if destination is not None:
+            serializer.validated_data["project"] = destination
+            serializer.validate(serializer.validated_data)
+        if destination and destination.id != task.project_id and not can_create_task_in_project(request.user, destination):
+            return Response(status=status.HTTP_403_FORBIDDEN)
         source_message = serializer.validated_data.get("source_chat_message")
         if source_message and (source_message.deleted_at or not can_access_chat_thread(request.user, source_message.thread)):
             return Response({"source_chat_message_id": ["Source message is not available."]}, status=status.HTTP_400_BAD_REQUEST)
         task = serializer.save(updated_by=request.user)
+        reconcile_task_work_sessions(task, event="updated")
         if "description" in serializer.validated_data:
             notify_task_mentions(
                 body=task.description,
@@ -925,35 +965,69 @@ class TaskReorderView(APIView):
         moved_task_id = serializer.validated_data["moved_task_id"]
         ordered_items = serializer.validated_data["tasks"]
         ordered_ids = [item["id"] for item in ordered_items]
+        moved_item = next((item for item in ordered_items if item["id"] == moved_task_id), None)
+        if moved_item is None or len(set(ordered_ids)) != len(ordered_ids):
+            return Response({"tasks": ["Include the moved task exactly once and do not repeat cards."]}, status=status.HTTP_400_BAD_REQUEST)
+        # Acquire board rows in one order, never lock the moved card first:
+        # two users moving different cards must not deadlock each other.
+        moved_task = get_task_or_404(moved_task_id, lock=False)
+        archived_board = moved_task.archived
+        if not can_mutate_task(request.user, moved_task):
+            return Response(status=status.HTTP_403_FORBIDDEN)
 
         with transaction.atomic():
             tasks_by_id = {
                 task.id: task
                 for task in Task.objects.select_related("project", "current_assignee")
+                    .prefetch_related("project__collaborators")
                     .select_for_update(of=("self",))
-                    .filter(id__in=ordered_ids)
+                    .filter(Q(archived=archived_board) | Q(pk=moved_task_id))
+                    .order_by("id")
             }
-            moved_task = tasks_by_id.get(moved_task_id) or get_task_or_404(moved_task_id)
+            moved_task = tasks_by_id[moved_task_id]
+            if moved_task.archived != archived_board:
+                return Response({"detail": "This card was archived or restored. Refresh the board and try again."}, status=status.HTTP_409_CONFLICT)
             if not can_mutate_task(request.user, moved_task):
                 return Response(status=status.HTTP_403_FORBIDDEN)
 
             updated_tasks = []
             updated_at = timezone.now()
             moved_previous_status = moved_task.status
-            for item in ordered_items:
-                task = tasks_by_id.get(item["id"])
-                if task is None:
-                    continue
-                changed = False
-                if task.id == moved_task_id and task.status != item["status"]:
-                    task.status = item["status"]
-                    changed = True
-                if task.sort_order != item["sort_order"]:
-                    task.sort_order = item["sort_order"]
-                    changed = True
-                if changed:
-                    task.updated_by = request.user
-                    task.updated_at = updated_at
+            target_status = moved_item["status"]
+            columns = {
+                column_status: sorted(
+                    (task for task in tasks_by_id.values() if task.status == column_status and task.id != moved_task_id),
+                    key=lambda task: (task.sort_order, task.id),
+                )
+                for column_status in {moved_previous_status, target_status}
+            }
+            target_column = columns[target_status]
+            # Use visible neighbors as anchors for filtered boards. Only the moved
+            # card changes position; never trust submitted edits to other cards.
+            visible_target = sorted(
+                (item for item in ordered_items if item["status"] == target_status
+                 and (item["id"] == moved_task_id or
+                      (item["id"] in tasks_by_id and tasks_by_id[item["id"]].status == target_status))),
+                key=lambda item: (item["sort_order"], item["id"]),
+            )
+            visible_index = next(index for index, item in enumerate(visible_target) if item["id"] == moved_task_id)
+            target_ids = [task.id for task in target_column]
+            if visible_index:
+                insert_index = target_ids.index(visible_target[visible_index - 1]["id"]) + 1
+            elif len(visible_target) > 1:
+                insert_index = target_ids.index(visible_target[1]["id"])
+            else:
+                insert_index = len(target_column)
+            target_column.insert(insert_index, moved_task)
+            for column_status, column in columns.items():
+                for index, task in enumerate(column):
+                    if task.sort_order == index and task.status == column_status:
+                        continue
+                    task.sort_order = index
+                    task.status = column_status
+                    if task.id == moved_task_id:
+                        task.updated_by = request.user
+                        task.updated_at = updated_at
                     updated_tasks.append(task)
 
             if updated_tasks:
@@ -1020,7 +1094,7 @@ class TaskArchiveView(APIView):
 
     def post(self, request, pk: int):
         task = get_task_or_404(pk, request.user)
-        if request.user.role != "manager" and task.current_assignee_id != request.user.id:
+        if not can_mutate_task(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
         serializer = TaskArchiveSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -1033,6 +1107,7 @@ class TaskArchiveView(APIView):
         task.archived_at = timezone.now() if task.archived else None
         task.updated_by = request.user
         task.save(update_fields=["archived", "archived_at", "updated_by", "updated_at"])
+        reconcile_task_work_sessions(task, event="archived" if task.archived else "restored")
         record_task_activity(task, request.user, TaskActivityType.TASK_ARCHIVED, {"archived": task.archived})
         broadcast_task_event(task, "archived" if task.archived else "restored", recipients=related_task_user_ids(task))
         return Response(TaskDetailSerializer(get_task_detail_queryset().get(pk=task.pk), context={"request": request}).data, status=status.HTTP_200_OK)
@@ -1526,6 +1601,7 @@ class TaskReassignView(APIView):
         task.current_assignee = assignee
         task.updated_by = request.user
         task.save(update_fields=["current_assignee", "updated_by", "updated_at"])
+        reconcile_task_work_sessions(task, event="reassigned")
         record_task_activity(task, request.user, TaskActivityType.REASSIGNED, {"previous_assignee_id": previous_assignee_id, "assignee_id": assignee.id, "reason": reason})
         create_notification(recipient=assignee, notification_type=NotificationType.TASK_REASSIGNED, task=task, project=task.project, payload={"reason": reason})
         broadcast_task_event(task, "reassigned")
@@ -1587,17 +1663,30 @@ class WorkloadView(APIView):
     permission_classes = (IsManager,)
 
     def get(self, request):
+        now = timezone.now()
         users = User.objects.filter(is_active=True).order_by("first_name", "last_name")
+        logged_by_user = {
+            row["user_id"]: int(row["minutes"] or 0)
+            for row in TimeEntry.objects.filter(
+                task__archived=False, task__project__archived=False,
+            ).values("user_id").annotate(minutes=Sum("minutes"))
+        }
+        live_by_user = {}
+        for (_, worker_id, _), minutes in active_session_minutes(now=now).items():
+            live_by_user[worker_id] = live_by_user.get(worker_id, 0) + minutes
         rows = []
-        today = timezone.localdate()
+        today = timezone.localdate(now)
         for user in users:
-            assigned_tasks = Task.objects.filter(current_assignee=user, archived=False).exclude(status=TaskStatus.DONE)
+            assigned_tasks = Task.objects.filter(
+                Q(current_assignee=user) | Q(project__manager=user) | Q(project__collaborators=user),
+                archived=False, project__archived=False,
+            ).exclude(status=TaskStatus.DONE).distinct()
             rows.append({
                 "user": user,
                 "open_tasks": assigned_tasks.count(),
                 "overdue_tasks": assigned_tasks.filter(due_date__lt=today).count(),
                 "estimated_minutes": int(assigned_tasks.aggregate(total=Sum("estimated_minutes"))["total"] or 0),
-                "actual_minutes": int(TimeEntry.objects.filter(user=user, task__archived=False).aggregate(total=Sum("minutes"))["total"] or 0),
+                "actual_minutes": logged_by_user.get(user.pk, 0) + live_by_user.get(user.pk, 0),
             })
         return Response(WorkloadRowSerializer(rows, many=True).data, status=status.HTTP_200_OK)
 
@@ -1606,7 +1695,8 @@ class TimeReportView(APIView):
     permission_classes = (IsManager,)
 
     def get(self, request):
-        entry_filter = Q(tasks__archived=False)
+        now = timezone.now()
+        entry_filter = Q(tasks__archived=False, archived=False)
         if request.query_params.get("start_date"):
             entry_filter &= Q(tasks__time_entries__work_date__gte=request.query_params.get("start_date"))
         if request.query_params.get("end_date"):
@@ -1618,9 +1708,19 @@ class TimeReportView(APIView):
         )
         if request.query_params.get("project"):
             queryset = queryset.filter(pk=request.query_params.get("project"))
+        projects = list(queryset)
+        task_projects = dict(Task.objects.filter(project_id__in=[project.pk for project in projects]).values_list("pk", "project_id"))
+        live_by_project = {}
+        for (task_id, _, _), minutes in active_session_minutes(
+            task_ids=task_projects.keys(), user_id=request.query_params.get("user") or None,
+            start_date=request.query_params.get("start_date") or None,
+            end_date=request.query_params.get("end_date") or None, now=now,
+        ).items():
+            project_id = task_projects[task_id]
+            live_by_project[project_id] = live_by_project.get(project_id, 0) + minutes
         rows = [
-            {"project": project, "minutes": int(project.minutes or 0)}
-            for project in queryset.filter(minutes__gt=0)
+            {"project": project, "minutes": int(project.minutes or 0) + live_by_project.get(project.pk, 0)}
+            for project in projects if int(project.minutes or 0) + live_by_project.get(project.pk, 0) > 0
         ]
         return Response(TimeReportRowSerializer(rows, many=True).data, status=status.HTTP_200_OK)
 
@@ -1629,6 +1729,7 @@ class WorkflowAnalyticsReportView(APIView):
     permission_classes = (IsManager,)
 
     def get(self, request):
+        now = timezone.now()
         queryset = Task.objects.select_related(
             "project",
             "project__manager",
@@ -1636,7 +1737,8 @@ class WorkflowAnalyticsReportView(APIView):
         ).prefetch_related(
             "activities",
             "time_entries",
-        ).filter(archived=False)
+            "project__collaborators",
+        ).filter(archived=False, project__archived=False)
         if request.query_params.get("start_date"):
             queryset = queryset.filter(created_at__date__gte=request.query_params.get("start_date"))
         if request.query_params.get("end_date"):
@@ -1644,10 +1746,13 @@ class WorkflowAnalyticsReportView(APIView):
         if request.query_params.get("project"):
             queryset = queryset.filter(project_id=request.query_params.get("project"))
         if request.query_params.get("user"):
-            queryset = queryset.filter(current_assignee_id=request.query_params.get("user"))
+            user_id = request.query_params.get("user")
+            queryset = queryset.filter(
+                Q(current_assignee_id=user_id) | Q(project__manager_id=user_id) |
+                Q(project__collaborators__id=user_id) | Q(time_entries__user_id=user_id)
+            ).distinct()
 
         tasks = list(queryset)
-        now = timezone.now()
         lead_times = []
         cycle_times = []
         blocked_minutes = 0
@@ -1675,27 +1780,49 @@ class WorkflowAnalyticsReportView(APIView):
             for task in unresolved_reviews
             if task.review_requested_at
         ]
-        total_estimated = sum(task.estimated_minutes for task in tasks)
-        total_actual = sum(task.actual_minutes for task in tasks)
+        report_user = request.query_params.get("user")
+        total_actual = sum(task.actual_minutes for task in tasks) if not report_user else sum(
+            entry.minutes for task in tasks for entry in task.time_entries.all()
+            if not report_user or str(entry.user_id) == report_user
+        )
+        live_minutes = active_session_minutes(task_ids=[task.pk for task in tasks], user_id=report_user or None, now=now)
+        total_actual += sum(live_minutes.values())
+        live_by_worker_task = {}
+        for (task_id, worker_id, _), minutes in live_minutes.items():
+            key = (task_id, worker_id)
+            live_by_worker_task[key] = live_by_worker_task.get(key, 0) + minutes
+        active_users = {user.pk: user for user in User.objects.filter(is_active=True)}
+        workers_by_task = {
+            task.pk: ({task.project.manager_id, task.current_assignee_id} |
+                      {member.id for member in task.project.collaborators.all()}) & active_users.keys()
+            for task in tasks
+        }
+        # Compare person-hours to person-hours, not shared effort to one
+        # person's estimate. The per-card estimate remains unchanged.
+        total_estimated = sum(
+            task.estimated_minutes * (1 if report_user else max(1, len(
+                workers_by_task[task.pk] | {entry.user_id for entry in task.time_entries.all()}
+            ))) for task in tasks
+        )
         remaining_by_user: dict[int, dict] = {}
         for task in tasks:
-            if not task.current_assignee_id or task.status == TaskStatus.DONE:
+            if task.status == TaskStatus.DONE:
                 continue
-            remaining = max(task.estimated_minutes - task.actual_minutes, 0) or task.estimated_minutes
-            row = remaining_by_user.setdefault(
-                task.current_assignee_id,
-                {
-                    "user": UserSummarySerializer(task.current_assignee).data,
-                    "open_tasks": 0,
-                    "overdue_tasks": 0,
-                    "remaining_minutes": 0,
+            for worker_id in workers_by_task[task.pk]:
+                if report_user and str(worker_id) != report_user:
+                    continue
+                personal_minutes = sum(entry.minutes for entry in task.time_entries.all() if entry.user_id == worker_id)
+                personal_minutes += live_by_worker_task.get((task.pk, worker_id), 0)
+                remaining = max(task.estimated_minutes - personal_minutes, 0)
+                row = remaining_by_user.setdefault(worker_id, {
+                    "user": UserSummarySerializer(active_users[worker_id]).data,
+                    "open_tasks": 0, "overdue_tasks": 0, "remaining_minutes": 0,
                     "capacity_minutes": WORK_WEEK_MINUTES,
-                },
-            )
-            row["open_tasks"] += 1
-            row["remaining_minutes"] += remaining
-            if task.is_overdue:
-                row["overdue_tasks"] += 1
+                })
+                row["open_tasks"] += 1
+                row["remaining_minutes"] += remaining
+                if task.is_overdue:
+                    row["overdue_tasks"] += 1
 
         capacity = []
         today = timezone.localdate()
@@ -1742,7 +1869,9 @@ class NotificationListView(APIView):
     def get(self, request):
         queryset = Notification.objects.filter(recipient=request.user).select_related("task__project__manager", "task__current_assignee", "project__manager")
         if parse_bool(request.query_params.get("unread")) is True:
-            queryset = queryset.filter(read_at__isnull=True)
+            queryset = queryset.filter(read_at__isnull=True).filter(
+                Q(snoozed_until__isnull=True) | Q(snoozed_until__lte=timezone.now())
+            )
         return Response(NotificationItemSerializer(queryset, many=True, context={"request": request}).data, status=status.HTTP_200_OK)
 
 
@@ -1791,12 +1920,15 @@ class NotificationActionView(APIView):
         elif action == "accept_assignment":
             if not task:
                 return Response({"task": ["This notification is not linked to a task."]}, status=status.HTTP_400_BAD_REQUEST)
+            if not can_mutate_task(request.user, task):
+                return Response(status=status.HTTP_403_FORBIDDEN)
             if task.current_assignee_id not in {None, request.user.id} and not is_manager_user(request.user):
                 return Response(status=status.HTTP_403_FORBIDDEN)
             if task.current_assignee_id is None:
                 task.current_assignee = request.user
                 task.updated_by = request.user
                 task.save(update_fields=["current_assignee", "updated_by", "updated_at"])
+                reconcile_task_work_sessions(task, event="assignment_accepted")
                 record_task_activity(task, request.user, TaskActivityType.REASSIGNED, {"assignee_id": request.user.id, "source": "notification_action"})
                 broadcast_task_event(task, "reassigned", recipients=related_task_user_ids(task))
             mark_notification_read(notification)
