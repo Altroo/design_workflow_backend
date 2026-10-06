@@ -6,7 +6,16 @@ from typing import Any
 from uuid import uuid4
 
 import cv2
+from django.core.files.base import ContentFile, File
+from django.db.models import ProtectedError
+from django.utils.translation import ngettext
+from numpy import frombuffer, uint8
 from PIL import Image, UnidentifiedImageError
+from rest_framework import serializers, status
+from rest_framework.exceptions import ErrorDetail, Throttled
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.response import Response
+from rest_framework.views import exception_handler
 
 imdecode: Any = cv2.imdecode
 resize: Any = cv2.resize
@@ -15,23 +24,19 @@ cvtColor: Any = cv2.cvtColor
 COLOR_BGR2RGB: Any = cv2.COLOR_BGR2RGB
 GaussianBlur: Any = cv2.GaussianBlur
 
-from django.core.files.base import ContentFile
-from django.db.models import ProtectedError
-from django.utils.translation import ngettext
-from numpy import uint8, frombuffer
-from rest_framework import serializers, status
-from rest_framework.exceptions import Throttled
-from rest_framework.pagination import PageNumberPagination
-from rest_framework.response import Response
-from rest_framework.views import exception_handler
-
 
 class ImageProcessor:
     MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 
     @staticmethod
     def load_image_from_io(bytes_: BytesIO):
-        return cvtColor(imdecode(frombuffer(bytes_.read(), uint8), 1), COLOR_BGR2RGB)
+        encoded = frombuffer(bytes_.read(), uint8)
+        if encoded.size == 0:
+            raise ValueError("Image data is empty.")
+        image = imdecode(encoded, 1)
+        if image is None:
+            raise ValueError("Image data could not be decoded.")
+        return cvtColor(image, COLOR_BGR2RGB)
 
     @staticmethod
     def from_img_to_io(image, format_):
@@ -70,14 +75,14 @@ class ImageProcessor:
                 except UnidentifiedImageError:
                     return None
                 except Exception as e:
-                    raise ValueError(f"Failed to read image: {str(e)}")
+                    raise ValueError(f"Failed to read image: {str(e)}") from e
             else:
                 try:
                     image = Image.open(BytesIO(image_data))
                 except UnidentifiedImageError:
                     return None
                 except Exception as e:
-                    raise ValueError(f"Failed to read image: {str(e)}")
+                    raise ValueError(f"Failed to read image: {str(e)}") from e
 
             # Validate image dimensions
             width, height = image.size
@@ -131,7 +136,7 @@ class ImageProcessor:
         except Exception as e:
             raise ValueError(
                 f"Image processing failed: {str(e)}. Please ensure the file is a valid image."
-            )
+            ) from e
 
     @staticmethod
     def data_url_to_uploaded_file(data):
@@ -139,7 +144,7 @@ class ImageProcessor:
             # Check if the base64 string is in the "data:" format
             if "data:" in data and ";base64," in data:
                 # Break out the header from the base64 content
-                header, data = data.split(";base64,")
+                _, data = data.split(";base64,")
             # Try to decode the file. Return validation error if it fails.
             try:
                 decoded_file = b64decode(data)
@@ -166,7 +171,7 @@ class ImageProcessor:
         """
         Resize image proportionally and place it on a blurred background.
         """
-        h, w = image.shape[:2]
+        h, w = (int(dimension) for dimension in image.shape[:2])
         scale = target_size / max(h, w)
         new_w, new_h = int(w * scale), int(h * scale)
 
@@ -186,18 +191,18 @@ class ImageProcessor:
 
 
 class Base64ImageField(serializers.ImageField):
-    def to_internal_value(self, data):
+    def to_internal_value(self, data: str | File):
         # Check if this is a base64 string
         decoded_file = None
         if isinstance(data, str):
             # Check if the base64 string is in the "data:" format
             if "data:" in data and ";base64," in data:
                 # Break out the header from the base64 content
-                header, data = data.split(";base64,")
+                _, data = data.split(";base64,", 1)
             # Try to decode the file. Return validation error if it fails.
             try:
                 decoded_file = b64decode(data)
-            except TypeError:
+            except binascii.Error, ValueError, TypeError:
                 self.fail("invalid_image")
 
             # Generate file name:
@@ -207,13 +212,13 @@ class Base64ImageField(serializers.ImageField):
             complete_file_name = f"{file_name}.{file_extension}"
             data = ContentFile(decoded_file, name=complete_file_name)
 
-        return super(Base64ImageField, self).to_internal_value(data)
+        return super().to_internal_value(data)
 
     @staticmethod
     def get_file_extension(_, decoded_file):
         try:
             image = Image.open(BytesIO(decoded_file))
-            extension = image.format.lower()
+            extension = (image.format or "JPEG").lower()
             return "jpg" if extension == "jpeg" else extension
         except UnidentifiedImageError:
             return "jpg"
@@ -236,12 +241,16 @@ def api_exception_handler(exc, context):
 
     # Translate DRF throttle message to French before handling
     if isinstance(exc, Throttled):
-        wait = int(exc.wait) if exc.wait else 0
-        exc.detail = ngettext(
-            "Requête ralentie. Réessayez dans %(wait)d seconde.",
-            "Requête ralentie. Réessayez dans %(wait)d secondes.",
-            wait,
-        ) % {"wait": wait}
+        wait = int(getattr(exc, "wait", None) or 0)
+        exc.detail = ErrorDetail(
+            ngettext(
+                "Requête ralentie. Réessayez dans %(wait)d seconde.",
+                "Requête ralentie. Réessayez dans %(wait)d secondes.",
+                wait,
+            )
+            % {"wait": wait},
+            code=exc.default_code,
+        )
 
     response = exception_handler(exc, context)
 

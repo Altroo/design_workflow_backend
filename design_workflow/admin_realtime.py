@@ -6,16 +6,25 @@ from django.utils import timezone
 from simple_history.admin import SimpleHistoryAdmin
 
 from .models import (
-    ChatThreadKind, Project, ProjectStatus, Task, TaskActivityType, TimeEntry,
+    ChatThreadKind,
+    Project,
+    ProjectStatus,
+    Task,
+    TaskActivityType,
+    TimeEntry,
 )
 from .services import broadcast_workflow_event, record_task_activity
 from .time_tracking import reconcile_task_work_sessions
 
 
 def _lock_tasks(task_ids):
-    return list(Task.objects.select_for_update(of=("self",)).filter(
-        pk__in=task_ids,
-    ).order_by("pk"))
+    return list(
+        Task.objects.select_for_update(of=("self",))
+        .filter(
+            pk__in=task_ids,
+        )
+        .order_by("pk")
+    )
 
 
 def _publish_admin_change():
@@ -44,13 +53,19 @@ class WorkflowRealtimeAdmin(SimpleHistoryAdmin):
         # these locks through save_related and its post-M2M reconciliation.
         with transaction.atomic():
             if isinstance(obj, Project):
-                previous = Project.objects.select_for_update().filter(pk=obj.pk).first() if change else None
+                previous = (
+                    Project.objects.select_for_update().filter(pk=obj.pk).first()
+                    if change
+                    else None
+                )
                 form._workflow_was_archived = previous.archived if previous else False
                 _lock_tasks(Task.objects.filter(project_id=obj.pk).values("pk"))
             elif isinstance(obj, Task):
                 project = Project.objects.select_for_update().get(pk=obj.project_id)
                 previous = _lock_tasks([obj.pk]) if change else []
-                form._workflow_old_project_id = previous[0].project_id if previous else obj.project_id
+                form._workflow_old_project_id = (
+                    previous[0].project_id if previous else obj.project_id
+                )
                 # Tasks cannot be restored/created active inside an archived project.
                 if project.archived:
                     obj.archived = True
@@ -59,7 +74,13 @@ class WorkflowRealtimeAdmin(SimpleHistoryAdmin):
                 else:
                     obj.archived_at = None
             elif isinstance(obj, TimeEntry):
-                old_task_id = TimeEntry.objects.filter(pk=obj.pk).values_list("task_id", flat=True).first() if change else None
+                old_task_id = (
+                    TimeEntry.objects.filter(pk=obj.pk)
+                    .values_list("task_id", flat=True)
+                    .first()
+                    if change
+                    else None
+                )
                 form._workflow_time_task_ids = {obj.task_id, old_task_id} - {None}
                 _lock_tasks(form._workflow_time_task_ids)
             super().save_model(request, obj, form, change)
@@ -77,7 +98,9 @@ class WorkflowRealtimeAdmin(SimpleHistoryAdmin):
         with transaction.atomic():
             request._workflow_history_revert = True
             try:
-                return super().history_form_view(request, object_id, version_id, extra_context)
+                return super().history_form_view(
+                    request, object_id, version_id, extra_context
+                )
             finally:
                 del request._workflow_history_revert
 
@@ -102,10 +125,23 @@ class WorkflowRealtimeAdmin(SimpleHistoryAdmin):
                     task.archived = True
                     task.archived_at = archived_at
                     task.updated_by = request.user
-                    task.save(update_fields=["archived", "archived_at", "updated_by", "updated_at"])
-                    record_task_activity(task, request.user, TaskActivityType.PROJECT_ARCHIVED, {
-                        "archived": True, "project_id": obj.pk,
-                    })
+                    task.save(
+                        update_fields=[
+                            "archived",
+                            "archived_at",
+                            "updated_by",
+                            "updated_at",
+                        ]
+                    )
+                    record_task_activity(
+                        task,
+                        request.user,
+                        TaskActivityType.PROJECT_ARCHIVED,
+                        {
+                            "archived": True,
+                            "project_id": obj.pk,
+                        },
+                    )
             elif was_archived:
                 # Match the API: restoring a project never restores its cards.
                 obj.archived_at = None
@@ -119,9 +155,16 @@ class WorkflowRealtimeAdmin(SimpleHistoryAdmin):
             # A history revert must not restore an obsolete cached total.
             obj.recalculate_actual_minutes()
             reconcile_task_work_sessions(obj, event="admin_task_updated")
-            _sync_project_threads({obj.project_id, getattr(form, "_workflow_old_project_id", obj.project_id)})
+            _sync_project_threads(
+                {
+                    obj.project_id,
+                    getattr(form, "_workflow_old_project_id", obj.project_id),
+                }
+            )
         elif isinstance(obj, TimeEntry):
-            for task in _lock_tasks(getattr(form, "_workflow_time_task_ids", {obj.task_id})):
+            for task in _lock_tasks(
+                getattr(form, "_workflow_time_task_ids", {obj.task_id})
+            ):
                 task.recalculate_actual_minutes()
         _publish_admin_change()
 
@@ -137,7 +180,11 @@ class WorkflowRealtimeAdmin(SimpleHistoryAdmin):
         # QuerySet.delete bypasses TimeEntry.delete(), so its cached task totals
         # need explicit correction. Lock all affected tasks in the same order.
         with transaction.atomic():
-            tasks = _lock_tasks(queryset.values_list("task_id", flat=True)) if queryset.model is TimeEntry else []
+            tasks = (
+                _lock_tasks(queryset.values_list("task_id", flat=True))
+                if queryset.model is TimeEntry
+                else []
+            )
             super().delete_queryset(request, queryset)
             for task in tasks:
                 task.recalculate_actual_minutes()

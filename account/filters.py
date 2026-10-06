@@ -1,7 +1,7 @@
 import django_filters
-from django.contrib.postgres.search import SearchVector, SearchQuery, SearchRank
+from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
 from django.db import connection
-from django.db.models import Case, When, Value, CharField, Q, F, FloatField
+from django.db.models import Case, CharField, F, FloatField, Q, Value, When
 from django.db.utils import DatabaseError
 from django.utils.translation import gettext_lazy as _
 
@@ -34,6 +34,8 @@ def add_is_empty_filters(filterset):
 
 
 class IsEmptyAutoMixin:
+    filters: dict[str, django_filters.Filter]
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         add_is_empty_filters(self)

@@ -34,7 +34,6 @@ from design_workflow.models import (
     TimeEntry,
 )
 
-
 DEFAULT_MANAGER_EMAIL = "manager.e2e@design-workflow.local"
 DEFAULT_DESIGNER_EMAIL = "designer.e2e@design-workflow.local"
 DEFAULT_PASSWORD = "DesignWorkflowE2E!2026"
@@ -56,7 +55,9 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         if not settings.DEBUG and not options["force"]:
-            raise CommandError("Refusing to seed E2E data when DEBUG is false. Pass --force to override.")
+            raise CommandError(
+                "Refusing to seed E2E data when DEBUG is false. Pass --force to override."
+            )
 
         payload = seed_design_workflow_e2e(
             manager_email=options["manager_email"],
@@ -66,7 +67,15 @@ class Command(BaseCommand):
         self.stdout.write(json.dumps(payload, indent=2, sort_keys=True))
 
 
-def upsert_user(*, email: str, password: str, first_name: str, last_name: str, role: str, is_staff: bool):
+def upsert_user(
+    *,
+    email: str,
+    password: str,
+    first_name: str,
+    last_name: str,
+    role: str,
+    is_staff: bool,
+):
     User = get_user_model()
     user, _ = User.objects.get_or_create(
         email=email,
@@ -98,7 +107,9 @@ def upsert_user(*, email: str, password: str, first_name: str, last_name: str, r
     return user
 
 
-def seed_design_workflow_e2e(*, manager_email: str, designer_email: str, password: str) -> dict:
+def seed_design_workflow_e2e(
+    *, manager_email: str, designer_email: str, password: str
+) -> dict:
     now = timezone.now()
     with transaction.atomic():
         manager = upsert_user(
@@ -153,7 +164,9 @@ def seed_design_workflow_e2e(*, manager_email: str, designer_email: str, passwor
                 "updated_by": manager,
             },
         )
-        review_task.description = "Seeded card with artifacts, review state, and annotations."
+        review_task.description = (
+            "Seeded card with artifacts, review state, and annotations."
+        )
         review_task.current_assignee = designer
         review_task.status = TaskStatus.IN_REVIEW
         review_task.priority = Priority.HIGH
@@ -172,12 +185,22 @@ def seed_design_workflow_e2e(*, manager_email: str, designer_email: str, passwor
             title="E2E handoff checklist",
             defaults={"created_by": manager, "sort_order": 0},
         )
-        for index, title in enumerate(("Review annotation pins", "Approve latest artifact", "Confirm handoff notes")):
+        for index, title in enumerate(
+            (
+                "Review annotation pins",
+                "Approve latest artifact",
+                "Confirm handoff notes",
+            )
+        ):
             TaskChecklistItem.objects.get_or_create(
                 task=review_task,
                 checklist=checklist,
                 title=title,
-                defaults={"created_by": manager, "sort_order": index, "done": index == 0},
+                defaults={
+                    "created_by": manager,
+                    "sort_order": index,
+                    "done": index == 0,
+                },
             )
 
         TimeEntry.objects.get_or_create(
@@ -188,7 +211,9 @@ def seed_design_workflow_e2e(*, manager_email: str, designer_email: str, passwor
             defaults={"minutes": 90},
         )
 
-        attachment = TaskAttachment.objects.filter(task=review_task, name="e2e-material-board.svg").first()
+        attachment = TaskAttachment.objects.filter(
+            task=review_task, name="e2e-material-board.svg"
+        ).first()
         if not attachment:
             attachment = TaskAttachment(
                 task=review_task,
@@ -292,13 +317,17 @@ def seed_design_workflow_e2e(*, manager_email: str, designer_email: str, passwor
                 "source_chat_message": source_message,
             },
         )
-        source_task.description = "Seeded task created from a project chat source message."
+        source_task.description = (
+            "Seeded task created from a project chat source message."
+        )
         source_task.current_assignee = designer
         source_task.status = TaskStatus.TODO
         source_task.source_chat_message = source_message
         source_task.updated_by = manager
         source_task.save()
-        source_message.body = f"E2E source message: convert this decision into a task. #T{source_task.id}"
+        source_message.body = (
+            f"E2E source message: convert this decision into a task. #T{source_task.id}"
+        )
         source_message.save(update_fields=["body", "updated_at"])
 
         SavedView.objects.update_or_create(
@@ -306,7 +335,10 @@ def seed_design_workflow_e2e(*, manager_email: str, designer_email: str, passwor
             name="E2E Review Queue",
             defaults={
                 "visibility": SavedViewVisibility.TEAM,
-                "filters": {"review_state": TaskReviewState.NEEDS_REVIEW, "project": project.id},
+                "filters": {
+                    "review_state": TaskReviewState.NEEDS_REVIEW,
+                    "project": project.id,
+                },
                 "sort": {"field": "due_date", "direction": "asc"},
                 "is_default": True,
             },
@@ -327,7 +359,10 @@ def seed_design_workflow_e2e(*, manager_email: str, designer_email: str, passwor
             notification_type=NotificationType.REVIEW_REQUESTED,
             task=review_task,
             project=project,
-            payload={"review_state": TaskReviewState.NEEDS_REVIEW, "notes": "Seeded review request"},
+            payload={
+                "review_state": TaskReviewState.NEEDS_REVIEW,
+                "notes": "Seeded review request",
+            },
         )
         chat_notification = upsert_seed_notification(
             recipient=designer,
@@ -357,7 +392,9 @@ def seed_design_workflow_e2e(*, manager_email: str, designer_email: str, passwor
     }
 
 
-def upsert_seed_notification(*, recipient, notification_type: str, task, project, payload: dict) -> Notification:
+def upsert_seed_notification(
+    *, recipient, notification_type: str, task, project, payload: dict
+) -> Notification:
     queryset = Notification.objects.filter(
         recipient=recipient,
         type=notification_type,
@@ -379,6 +416,14 @@ def upsert_seed_notification(*, recipient, notification_type: str, task, project
     notification.snoozed_until = None
     notification.action_taken_at = None
     notification.action_taken_by = None
-    notification.save(update_fields=["payload", "read_at", "snoozed_until", "action_taken_at", "action_taken_by"])
+    notification.save(
+        update_fields=[
+            "payload",
+            "read_at",
+            "snoozed_until",
+            "action_taken_at",
+            "action_taken_by",
+        ]
+    )
     queryset.exclude(pk=notification.pk).delete()
     return notification

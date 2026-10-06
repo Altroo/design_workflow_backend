@@ -112,7 +112,9 @@ class Project(TimestampedModel):
         related_name="managed_projects",
     )
     collaborators = models.ManyToManyField(
-        settings.AUTH_USER_MODEL, blank=True, related_name="collaborating_projects",
+        settings.AUTH_USER_MODEL,
+        blank=True,
+        related_name="collaborating_projects",
     )
     start_date = models.DateField(null=True, blank=True)
     target_end_date = models.DateField(null=True, blank=True)
@@ -199,7 +201,9 @@ class SavedView(TimestampedModel):
     class Meta:
         ordering = ("-is_default", "name")
         constraints = (
-            models.UniqueConstraint(fields=("owner", "name"), name="unique_design_saved_view_owner_name"),
+            models.UniqueConstraint(
+                fields=("owner", "name"), name="unique_design_saved_view_owner_name"
+            ),
         )
         indexes = (
             models.Index(fields=("owner", "visibility")),
@@ -321,7 +325,9 @@ class Task(TimestampedModel):
 
 
 class TaskChecklistItem(TimestampedModel):
-    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="checklist_items")
+    task = models.ForeignKey(
+        Task, on_delete=models.CASCADE, related_name="checklist_items"
+    )
     checklist = models.ForeignKey(
         "TaskChecklist",
         on_delete=models.CASCADE,
@@ -393,7 +399,9 @@ class TaskAttachment(TimestampedModel):
 
 
 class TaskArtifactVersion(TimestampedModel):
-    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="artifact_versions")
+    task = models.ForeignKey(
+        Task, on_delete=models.CASCADE, related_name="artifact_versions"
+    )
     attachment = models.ForeignKey(
         TaskAttachment,
         on_delete=models.SET_NULL,
@@ -427,18 +435,21 @@ class TaskArtifactVersion(TimestampedModel):
     class Meta:
         ordering = ("-version_number", "-created_at")
         constraints = (
-            models.UniqueConstraint(fields=("task", "version_number"), name="unique_design_task_artifact_version"),
+            models.UniqueConstraint(
+                fields=("task", "version_number"),
+                name="unique_design_task_artifact_version",
+            ),
         )
-        indexes = (
-            models.Index(fields=("task", "approval_state")),
-        )
+        indexes = (models.Index(fields=("task", "approval_state")),)
 
     def __str__(self):
         return f"{self.task_id}:v{self.version_number}"
 
 
 class AttachmentAnnotation(TimestampedModel):
-    attachment = models.ForeignKey(TaskAttachment, on_delete=models.CASCADE, related_name="annotations")
+    attachment = models.ForeignKey(
+        TaskAttachment, on_delete=models.CASCADE, related_name="annotations"
+    )
     version = models.ForeignKey(
         TaskArtifactVersion,
         on_delete=models.SET_NULL,
@@ -475,25 +486,35 @@ class AttachmentAnnotation(TimestampedModel):
 
     class Meta:
         ordering = ("created_at",)
-        indexes = (
-            models.Index(fields=("attachment", "resolved")),
-        )
+        indexes = (models.Index(fields=("attachment", "resolved")),)
 
     def __str__(self):
         return f"{self.attachment_id}:{self.x_percent},{self.y_percent}"
 
 
 class TaskWorkSession(models.Model):
-    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="work_sessions")
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="design_work_sessions")
+    task = models.ForeignKey(
+        Task, on_delete=models.CASCADE, related_name="work_sessions"
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="design_work_sessions",
+    )
     started_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=("task", "user"), name="unique_task_worker_session")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=("task", "user"), name="unique_task_worker_session"
+            )
+        ]
 
 
 class TimeEntry(TimestampedModel):
-    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="time_entries")
+    task = models.ForeignKey(
+        Task, on_delete=models.CASCADE, related_name="time_entries"
+    )
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -558,7 +579,9 @@ class Notification(models.Model):
         on_delete=models.CASCADE,
         related_name="design_notifications",
     )
-    type = models.CharField(max_length=32, choices=NotificationType.choices, db_index=True)
+    type = models.CharField(
+        max_length=32, choices=NotificationType.choices, db_index=True
+    )
     project = models.ForeignKey(
         Project,
         on_delete=models.CASCADE,
@@ -616,7 +639,6 @@ class NotificationPreference(TimestampedModel):
         return f"{self.user_id}:{self.digest_frequency}"
 
 
-
 class ChatThreadKind(models.TextChoices):
     PUBLIC = "public", "Public"
     PRIVATE = "private", "Private"
@@ -625,7 +647,9 @@ class ChatThreadKind(models.TextChoices):
 
 
 class ChatThread(TimestampedModel):
-    kind = models.CharField(max_length=16, choices=ChatThreadKind.choices, db_index=True)
+    kind = models.CharField(
+        max_length=16, choices=ChatThreadKind.choices, db_index=True
+    )
     title = models.CharField(max_length=255, blank=True)
     project = models.ForeignKey(
         Project,
@@ -677,7 +701,9 @@ class ChatThread(TimestampedModel):
 
 
 class ChatMessage(TimestampedModel):
-    thread = models.ForeignKey(ChatThread, on_delete=models.CASCADE, related_name="messages")
+    thread = models.ForeignKey(
+        ChatThread, on_delete=models.CASCADE, related_name="messages"
+    )
     sender = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -742,7 +768,9 @@ class ChatMessage(TimestampedModel):
 
 
 class ChatMessageAttachment(TimestampedModel):
-    message = models.ForeignKey(ChatMessage, on_delete=models.CASCADE, related_name="attachments")
+    message = models.ForeignKey(
+        ChatMessage, on_delete=models.CASCADE, related_name="attachments"
+    )
     file = models.FileField(upload_to="design_workflow/chat_attachments/%Y/%m/")
     name = models.CharField(max_length=255)
     mime_type = models.CharField(max_length=120, blank=True)
@@ -757,7 +785,9 @@ class ChatMessageAttachment(TimestampedModel):
 
 
 class ChatMessageEdit(TimestampedModel):
-    message = models.ForeignKey(ChatMessage, on_delete=models.CASCADE, related_name="edit_history")
+    message = models.ForeignKey(
+        ChatMessage, on_delete=models.CASCADE, related_name="edit_history"
+    )
     edited_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -777,7 +807,9 @@ class ChatMessageEdit(TimestampedModel):
 
 
 class ChatMessageReaction(TimestampedModel):
-    message = models.ForeignKey(ChatMessage, on_delete=models.CASCADE, related_name="reactions")
+    message = models.ForeignKey(
+        ChatMessage, on_delete=models.CASCADE, related_name="reactions"
+    )
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -789,7 +821,9 @@ class ChatMessageReaction(TimestampedModel):
     class Meta:
         ordering = ("created_at",)
         constraints = (
-            models.UniqueConstraint(fields=("message", "user", "emoji"), name="unique_design_chat_reaction"),
+            models.UniqueConstraint(
+                fields=("message", "user", "emoji"), name="unique_design_chat_reaction"
+            ),
         )
 
     def __str__(self):
@@ -797,7 +831,9 @@ class ChatMessageReaction(TimestampedModel):
 
 
 class ChatMessageReminder(TimestampedModel):
-    message = models.ForeignKey(ChatMessage, on_delete=models.CASCADE, related_name="reminders")
+    message = models.ForeignKey(
+        ChatMessage, on_delete=models.CASCADE, related_name="reminders"
+    )
     task = models.ForeignKey(
         Task,
         null=True,

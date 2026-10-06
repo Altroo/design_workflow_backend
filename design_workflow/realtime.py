@@ -1,4 +1,5 @@
 """Commit workflow mutations before notifying connected clients."""
+
 from django.db import transaction
 from rest_framework.views import APIView
 
@@ -22,9 +23,16 @@ class WorkflowAPIView(APIView):
             elif resource == "chat" and request.path.endswith("/chat/threads/"):
                 from .models import ChatThread
                 from .views import linked_thread_user_ids
+
                 thread = ChatThread.objects.get(pk=response.data["id"])
-                broadcast_workflow_event("chat", recipients=linked_thread_user_ids(thread))
+                broadcast_workflow_event(
+                    "chat", recipients=linked_thread_user_ids(thread)
+                )
             elif resource == "notifications":
-                scope = "notification-preferences" if request.path.endswith("/preferences/") else "notifications"
+                scope = (
+                    "notification-preferences"
+                    if request.path.endswith("/preferences/")
+                    else "notifications"
+                )
                 broadcast_workflow_event(scope, recipients=[request.user.id])
             return response

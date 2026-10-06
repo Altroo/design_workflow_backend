@@ -38,7 +38,7 @@ class SimpleJwtTokenAuthMiddleware(BaseMiddleware):
             token = parse_qs(scope["query_string"].decode("utf8")).get("token", [None])[
                 0
             ]
-        except (UnicodeDecodeError, KeyError, IndexError, TypeError):
+        except UnicodeDecodeError, KeyError, IndexError, TypeError:
             token = None
 
         if not token:
@@ -48,7 +48,7 @@ class SimpleJwtTokenAuthMiddleware(BaseMiddleware):
 
         try:
             UntypedToken(token)  # type: ignore[arg-type]
-        except (InvalidToken, TokenError):
+        except InvalidToken, TokenError:
             scope["user"] = AnonymousUser()
             await self._reject_connection(send)
             return None
@@ -56,7 +56,7 @@ class SimpleJwtTokenAuthMiddleware(BaseMiddleware):
         try:
             decoded_data = jwt_decode(token, settings.SECRET_KEY, algorithms=["HS256"])
             scope["user"] = await self.get_user_from_token(decoded_data["user_id"])
-        except (KeyError, CustomUser.DoesNotExist, DecodeError):
+        except KeyError, CustomUser.DoesNotExist, DecodeError:
             scope["user"] = AnonymousUser()
             await self._reject_connection(send)
             return None

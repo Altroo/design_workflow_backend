@@ -8,4 +8,5 @@ class AccountConfig(AppConfig):
     label = "accounts"
 
     def ready(self):
-        from . import signals  # noqa: F401
+        # Importing registers the user-change signal receivers.
+        from . import signals  # noqa: F401  # pylint: disable=unused-import

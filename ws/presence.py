@@ -6,7 +6,6 @@ from weakref import WeakKeyDictionary
 
 from channels.layers import InMemoryChannelLayer
 
-
 PRESENCE_LEASE_SECONDS = 90
 _memory_leases = WeakKeyDictionary()
 
@@ -52,7 +51,9 @@ return {after, changed and 1 or 0, tonumber(clock[1]) * 1000000 + tonumber(clock
 """
 
 
-async def update_presence(channel_layer, user_id: int, channel_name: str, *, connected: bool = True) -> PresenceSnapshot:
+async def update_presence(
+    channel_layer, user_id: int, channel_name: str, *, connected: bool = True
+) -> PresenceSnapshot:
     """Renew/remove one lease and return all live users plus membership change.
 
     The explicit InMemoryChannelLayer is the only local/test fallback. Redis
@@ -61,7 +62,7 @@ async def update_presence(channel_layer, user_id: int, channel_name: str, *, con
     member = f"{user_id}:{channel_name}"
     if isinstance(channel_layer, InMemoryChannelLayer):
         leases = _memory_leases.setdefault(channel_layer, {})
-        before = {int(key.split(':', 1)[0]) for key in leases}
+        before = {int(key.split(":", 1)[0]) for key in leases}
         now = monotonic()
         for key in [key for key, expires in leases.items() if expires <= now]:
             leases.pop(key, None)
@@ -69,7 +70,7 @@ async def update_presence(channel_layer, user_id: int, channel_name: str, *, con
             leases[member] = now + PRESENCE_LEASE_SECONDS
         else:
             leases.pop(member, None)
-        after = {int(key.split(':', 1)[0]) for key in leases}
+        after = {int(key.split(":", 1)[0]) for key in leases}
         return PresenceSnapshot(sorted(after), before != after, int(now * 1_000_000))
 
     # Reuse channels-redis' configured connection/pool (including credentials,
@@ -77,6 +78,13 @@ async def update_presence(channel_layer, user_id: int, channel_name: str, *, con
     connection = channel_layer.connection(0)
     key = f"{channel_layer.prefix}:design_workflow:presence:v1"
     user_ids, changed, revision = await connection.eval(
-        _UPDATE_LEASE, 1, key, member, int(connected), PRESENCE_LEASE_SECONDS,
+        _UPDATE_LEASE,
+        1,
+        key,
+        member,
+        int(connected),
+        PRESENCE_LEASE_SECONDS,
     )
-    return PresenceSnapshot(sorted(int(value) for value in user_ids), bool(changed), int(revision))
+    return PresenceSnapshot(
+        sorted(int(value) for value in user_ids), bool(changed), int(revision)
+    )

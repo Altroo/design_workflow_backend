@@ -3,7 +3,15 @@ from rest_framework import permissions
 
 class IsManager(permissions.BasePermission):
     def has_permission(self, request, view):
-        return bool(request.user and request.user.is_authenticated and (request.user.role == "manager" or request.user.is_staff or getattr(request.user, "is_superuser", False)))
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and (
+                request.user.role == "manager"
+                or request.user.is_staff
+                or getattr(request.user, "is_superuser", False)
+            )
+        )
 
 
 class IsManagerOrReadOnly(permissions.BasePermission):
@@ -12,7 +20,11 @@ class IsManagerOrReadOnly(permissions.BasePermission):
             return False
         if request.method in permissions.SAFE_METHODS:
             return True
-        return request.user.role == "manager" or request.user.is_staff or getattr(request.user, "is_superuser", False)
+        return (
+            request.user.role == "manager"
+            or request.user.is_staff
+            or getattr(request.user, "is_superuser", False)
+        )
 
 
 def can_mutate_task(user, task) -> bool:
@@ -20,7 +32,9 @@ def can_mutate_task(user, task) -> bool:
         return False
     if user.role == "manager" or user.is_staff or getattr(user, "is_superuser", False):
         return True
-    return task.current_assignee_id == user.id or can_create_task_in_project(user, task.project)
+    return task.current_assignee_id == user.id or can_create_task_in_project(
+        user, task.project
+    )
 
 
 def can_manage_project(user, project) -> bool:
@@ -34,4 +48,8 @@ def can_manage_project(user, project) -> bool:
 def can_create_task_in_project(user, project) -> bool:
     if can_manage_project(user, project):
         return True
-    return bool(user and user.is_authenticated and any(member.id == user.id for member in project.collaborators.all()))
+    return bool(
+        user
+        and user.is_authenticated
+        and any(member.id == user.id for member in project.collaborators.all())
+    )

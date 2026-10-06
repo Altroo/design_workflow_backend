@@ -73,9 +73,9 @@ class SSOExchangeView(APIView):
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8")
-            raise PermissionDenied(detail or "SSO verification failed.")
-        except urllib.error.URLError:
-            raise ValidationError({"sso": ["Service SSO indisponible."]})
+            raise PermissionDenied(detail or "SSO verification failed.") from exc
+        except urllib.error.URLError as exc:
+            raise ValidationError({"sso": ["Service SSO indisponible."]}) from exc
 
     @staticmethod
     def _get_or_create_user(claims):

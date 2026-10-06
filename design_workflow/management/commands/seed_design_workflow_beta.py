@@ -42,7 +42,6 @@ from design_workflow.models import (
     TimeEntry,
 )
 
-
 DEFAULT_OWNER_EMAIL = "info@elbouazzatiholding.ma"
 DEFAULT_PASSWORD = "DesignWorkflowBeta!2026"
 
@@ -61,7 +60,9 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         if not settings.DEBUG and not options["force"]:
-            raise CommandError("Refusing to seed beta data when DEBUG is false. Pass --force to override.")
+            raise CommandError(
+                "Refusing to seed beta data when DEBUG is false. Pass --force to override."
+            )
 
         payload = seed_design_workflow_beta(
             owner_email=options["owner_email"],
@@ -80,16 +81,22 @@ def seed_design_workflow_beta(*, owner_email: str, password: str) -> dict:
 
         labels = seed_labels(owner=owner)
         projects = seed_projects(users=users, today=today)
-        tasks = seed_tasks(projects=projects, users=users, labels=labels, today=today, now=now)
+        tasks = seed_tasks(
+            projects=projects, users=users, labels=labels, today=today, now=now
+        )
 
         seed_checklists(tasks=tasks, users=users, now=now)
         seed_time_entries(tasks=tasks, users=users, today=today)
         seed_task_comments_and_activity(tasks=tasks, users=users)
         seed_artifacts(tasks=tasks, users=users, now=now)
-        threads, messages = seed_chat(projects=projects, tasks=tasks, users=users, now=now)
+        threads, messages = seed_chat(
+            projects=projects, tasks=tasks, users=users, now=now
+        )
         seed_message_to_task_source(tasks=tasks, messages=messages, users=users)
         seed_saved_views(owner=owner, projects=projects)
-        seed_notifications(owner=owner, projects=projects, tasks=tasks, messages=messages, now=now)
+        seed_notifications(
+            owner=owner, projects=projects, tasks=tasks, messages=messages, now=now
+        )
         seed_notification_preferences(owner=owner)
 
     return {
@@ -231,7 +238,10 @@ def seed_projects(*, users: dict, today) -> dict:
     specs = {
         "beta_system": {
             "name": "Beta Launch Design System",
-            "description": "Workspace-wide polish for the first beta group: navigation, cards, responsive QA, and handoff states.",
+            "description": (
+                "Workspace-wide polish for the first beta group: "
+                "navigation, cards, responsive QA, and handoff states."
+            ),
             "manager": users["owner"],
             "priority": Priority.URGENT,
             "status": ProjectStatus.ACTIVE,
@@ -292,7 +302,10 @@ def seed_tasks(*, projects: dict, users: dict, labels: dict, today, now) -> dict
             "key": "responsive_sweep",
             "project": "beta_system",
             "title": "Run responsive design sweep",
-            "description": "Verify desktop, tablet, and mobile across dashboard, board, reports, team, chat, and notifications.",
+            "description": (
+                "Verify desktop, tablet, and mobile across dashboard, "
+                "board, reports, team, chat, and notifications."
+            ),
             "assignee": "lina",
             "status": TaskStatus.IN_PROGRESS,
             "priority": Priority.URGENT,
@@ -491,12 +504,16 @@ def seed_tasks(*, projects: dict, users: dict, labels: dict, today, now) -> dict
 
         if "review_requested_by" in spec:
             task.review_requested_by = users[spec["review_requested_by"]]
-            task.review_requested_at = now - timedelta(hours=spec["review_requested_delta_hours"])
+            task.review_requested_at = now - timedelta(
+                hours=spec["review_requested_delta_hours"]
+            )
         if "approved_by" in spec:
             task.review_approved_by = users[spec["approved_by"]]
             task.review_approved_at = now + timedelta(days=spec["approved_delta_days"])
         if "work_started_delta_hours" in spec:
-            task.work_started_at = now - timedelta(hours=spec["work_started_delta_hours"])
+            task.work_started_at = now - timedelta(
+                hours=spec["work_started_delta_hours"]
+            )
 
         task.is_completed = spec["status"] == TaskStatus.DONE
         task.completed_at = now - timedelta(days=2) if task.is_completed else None
@@ -559,7 +576,9 @@ def seed_checklists(*, tasks: dict, users: dict, now):
                     "sort_order": index,
                     "created_by": users["owner"],
                     "completed_by": completed_by,
-                    "completed_at": now - timedelta(hours=2 + index) if completed_by else None,
+                    "completed_at": (
+                        now - timedelta(hours=2 + index) if completed_by else None
+                    ),
                 },
             )
 
@@ -590,19 +609,53 @@ def seed_time_entries(*, tasks: dict, users: dict, today):
 
 def seed_task_comments_and_activity(*, tasks: dict, users: dict):
     comments = (
-        ("review_mobile", "maya", "Please keep the mobile lanes swipeable but make the active task drawer easier to close."),
-        ("review_mobile", "lina", "Added a second capture and left unresolved pins for footer spacing."),
-        ("payment_icons", "owner", "This stays blocked until the provider confirms usage rights."),
-        ("booking_review", "nadia", "QA pass should include the annotation overlay and approved version badge."),
-        ("responsive_sweep", "owner", "Run the populated-data pass before any beta access is shared."),
+        (
+            "review_mobile",
+            "maya",
+            "Please keep the mobile lanes swipeable but make the active task drawer easier to close.",
+        ),
+        (
+            "review_mobile",
+            "lina",
+            "Added a second capture and left unresolved pins for footer spacing.",
+        ),
+        (
+            "payment_icons",
+            "owner",
+            "This stays blocked until the provider confirms usage rights.",
+        ),
+        (
+            "booking_review",
+            "nadia",
+            "QA pass should include the annotation overlay and approved version badge.",
+        ),
+        (
+            "responsive_sweep",
+            "owner",
+            "Run the populated-data pass before any beta access is shared.",
+        ),
     )
     for task_key, user_key, body in comments:
-        TaskComment.objects.get_or_create(task=tasks[task_key], author=users[user_key], body=body)
+        TaskComment.objects.get_or_create(
+            task=tasks[task_key], author=users[user_key], body=body
+        )
 
     activities = (
-        ("review_mobile", TaskActivityType.REVIEW_UPDATED, "Review requested by design"),
-        ("payment_icons", TaskActivityType.STATUS_CHANGED, "Moved to blocked pending approval"),
-        ("booking_review", TaskActivityType.ARTIFACT_VERSION_ADDED, "New artifact version uploaded"),
+        (
+            "review_mobile",
+            TaskActivityType.REVIEW_UPDATED,
+            "Review requested by design",
+        ),
+        (
+            "payment_icons",
+            TaskActivityType.STATUS_CHANGED,
+            "Moved to blocked pending approval",
+        ),
+        (
+            "booking_review",
+            TaskActivityType.ARTIFACT_VERSION_ADDED,
+            "New artifact version uploaded",
+        ),
         ("source_task", TaskActivityType.CREATED, "Created from chat decision"),
     )
     for task_key, action_type, summary in activities:
@@ -687,7 +740,11 @@ def seed_artifacts(*, tasks: dict, users: dict, now):
                 "notes": spec["notes"],
                 "approval_state": spec["state"],
                 "approved_by": users.get(spec.get("approved_by", "")),
-                "approved_at": now - timedelta(days=1) if spec["state"] == ArtifactApprovalState.APPROVED else None,
+                "approved_at": (
+                    now - timedelta(days=1)
+                    if spec["state"] == ArtifactApprovalState.APPROVED
+                    else None
+                ),
             },
         )
         annotation, _ = AttachmentAnnotation.objects.update_or_create(
@@ -716,7 +773,7 @@ def ensure_svg_attachment(*, task, uploader, file_name: str, title: str, fill: s
         f'<rect x="112" y="286" width="520" height="36" rx="12" fill="#cbd5e1"/>'
         f'<text x="112" y="400" font-family="Arial" font-size="42" font-weight="700" fill="#020617">{title}</text>'
         f"</svg>"
-    ).encode("utf-8")
+    ).encode()
     attachment = TaskAttachment.objects.filter(task=task, name=file_name).first()
     if not attachment:
         attachment = TaskAttachment(task=task, uploaded_by=uploader, name=file_name)
@@ -734,7 +791,9 @@ def seed_chat(*, projects: dict, tasks: dict, users: dict, now):
     public_thread = get_or_create_public_thread(users=users)
     beta_thread = get_or_create_project_thread(projects["beta_system"], users=users)
     booking_thread = get_or_create_project_thread(projects["booking_flow"], users=users)
-    sales_thread = get_or_create_project_thread(projects["sales_collateral"], users=users)
+    sales_thread = get_or_create_project_thread(
+        projects["sales_collateral"], users=users
+    )
     archive_thread = get_or_create_project_thread(projects["qa_reference"], users=users)
     review_thread = get_or_create_task_thread(tasks["review_mobile"], users=users)
     direct_thread = get_or_create_direct_thread(users=users)
@@ -782,7 +841,10 @@ def seed_chat(*, projects: dict, tasks: dict, users: dict, now):
         "sales_handoff": ensure_message(
             thread=sales_thread,
             sender=users["lina"],
-            body="Sales collateral is paused until the final brand direction lands, but the handoff deck draft is ready.",
+            body=(
+                "Sales collateral is paused until the final brand direction lands, "
+                "but the handoff deck draft is ready."
+            ),
             created_at=now - timedelta(hours=10),
             mentions=(users["owner"],),
             read_by=(users["lina"], users["owner"]),
@@ -813,7 +875,9 @@ def seed_chat(*, projects: dict, tasks: dict, users: dict, now):
     }
 
     ensure_chat_attachment(messages["review_pin"])
-    ChatMessageReaction.objects.get_or_create(message=messages["beta_decision"], user=users["owner"], emoji="ok")
+    ChatMessageReaction.objects.get_or_create(
+        message=messages["beta_decision"], user=users["owner"], emoji="ok"
+    )
     ensure_reminder(
         message=messages["review_pin"],
         task=tasks["review_mobile"],
@@ -822,7 +886,15 @@ def seed_chat(*, projects: dict, tasks: dict, users: dict, now):
         note="Review mobile footer spacing before beta access.",
     )
 
-    threads = (public_thread, beta_thread, booking_thread, sales_thread, archive_thread, review_thread, direct_thread)
+    threads = (
+        public_thread,
+        beta_thread,
+        booking_thread,
+        sales_thread,
+        archive_thread,
+        review_thread,
+        direct_thread,
+    )
     for thread in threads:
         last_message = thread.messages.order_by("-created_at").first()
         if last_message:
@@ -865,9 +937,13 @@ def get_or_create_task_thread(task, *, users: dict):
 
 
 def get_or_create_direct_thread(*, users: dict):
-    thread = ChatThread.objects.filter(kind=ChatThreadKind.PRIVATE, title="Service IT / Maya").first()
+    thread = ChatThread.objects.filter(
+        kind=ChatThreadKind.PRIVATE, title="Service IT / Maya"
+    ).first()
     if not thread:
-        thread = ChatThread.objects.create(kind=ChatThreadKind.PRIVATE, title="Service IT / Maya")
+        thread = ChatThread.objects.create(
+            kind=ChatThreadKind.PRIVATE, title="Service IT / Maya"
+        )
     thread.participants.add(users["owner"], users["maya"])
     return thread
 
@@ -883,7 +959,9 @@ def ensure_message(
     is_decision=False,
     decision_by=None,
 ):
-    message = ChatMessage.objects.filter(thread=thread, sender=sender, body=body).first()
+    message = ChatMessage.objects.filter(
+        thread=thread, sender=sender, body=body
+    ).first()
     if not message:
         message = ChatMessage.objects.create(thread=thread, sender=sender, body=body)
     message.body = body
@@ -892,7 +970,9 @@ def ensure_message(
     message.save()
     message.mentions.set(mentions)
     message.read_by.add(*read_by)
-    ChatMessage.objects.filter(pk=message.pk).update(created_at=created_at, updated_at=created_at)
+    ChatMessage.objects.filter(pk=message.pk).update(
+        created_at=created_at, updated_at=created_at
+    )
     message.refresh_from_db()
     return message
 
@@ -908,12 +988,16 @@ def ensure_chat_attachment(message):
         b'<text x="58" y="118" font-size="26" fill="#020617">Footer spacing note</text>'
         b"</svg>"
     )
-    attachment = ChatMessageAttachment(message=message, name=file_name, mime_type="image/svg+xml", size=len(content))
+    attachment = ChatMessageAttachment(
+        message=message, name=file_name, mime_type="image/svg+xml", size=len(content)
+    )
     attachment.file.save(file_name, ContentFile(content), save=True)
 
 
 def ensure_reminder(*, message, task, created_by, remind_at, note: str):
-    reminder = ChatMessageReminder.objects.filter(message=message, task=task, created_by=created_by, note=note).first()
+    reminder = ChatMessageReminder.objects.filter(
+        message=message, task=task, created_by=created_by, note=note
+    ).first()
     if reminder:
         reminder.remind_at = remind_at
         reminder.done_at = None
@@ -942,7 +1026,10 @@ def seed_saved_views(*, owner, projects: dict):
         name="Beta review queue",
         defaults={
             "visibility": SavedViewVisibility.TEAM,
-            "filters": {"review_state": TaskReviewState.NEEDS_REVIEW, "archived": False},
+            "filters": {
+                "review_state": TaskReviewState.NEEDS_REVIEW,
+                "archived": False,
+            },
             "sort": {"field": "due_date", "direction": "asc"},
             "density": SavedViewDensity.COMFORTABLE,
             "collapsed_lanes": [],
@@ -955,7 +1042,11 @@ def seed_saved_views(*, owner, projects: dict):
         name="Blocked and overdue",
         defaults={
             "visibility": SavedViewVisibility.PRIVATE,
-            "filters": {"status": TaskStatus.BLOCKED, "overdue": True, "archived": False},
+            "filters": {
+                "status": TaskStatus.BLOCKED,
+                "overdue": True,
+                "archived": False,
+            },
             "sort": {"field": "priority", "direction": "desc"},
             "density": SavedViewDensity.COMPACT,
             "collapsed_lanes": [TaskStatus.DONE],
@@ -984,25 +1075,38 @@ def seed_notifications(*, owner, projects: dict, tasks: dict, messages: dict, no
             NotificationType.REVIEW_REQUESTED,
             projects["beta_system"],
             tasks["review_mobile"],
-            {"seed_key": "beta-review-mobile", "title": "Mobile Kanban interaction polish", "review_state": TaskReviewState.NEEDS_REVIEW},
+            {
+                "seed_key": "beta-review-mobile",
+                "title": "Mobile Kanban interaction polish",
+                "review_state": TaskReviewState.NEEDS_REVIEW,
+            },
         ),
         (
             NotificationType.TASK_BLOCKED,
             projects["booking_flow"],
             tasks["payment_icons"],
-            {"seed_key": "payment-icons-blocked", "reason": tasks["payment_icons"].blocked_reason},
+            {
+                "seed_key": "payment-icons-blocked",
+                "reason": tasks["payment_icons"].blocked_reason,
+            },
         ),
         (
             NotificationType.TASK_OVERDUE,
             projects["booking_flow"],
             tasks["payment_icons"],
-            {"seed_key": "payment-icons-overdue", "due_date": str(tasks["payment_icons"].due_date)},
+            {
+                "seed_key": "payment-icons-overdue",
+                "due_date": str(tasks["payment_icons"].due_date),
+            },
         ),
         (
             NotificationType.TASK_DUE_SOON,
             projects["beta_system"],
             tasks["responsive_sweep"],
-            {"seed_key": "responsive-sweep-due", "due_date": str(tasks["responsive_sweep"].due_date)},
+            {
+                "seed_key": "responsive-sweep-due",
+                "due_date": str(tasks["responsive_sweep"].due_date),
+            },
         ),
         (
             NotificationType.CHAT_MESSAGE,
@@ -1031,7 +1135,15 @@ def seed_notifications(*, owner, projects: dict, tasks: dict, messages: dict, no
             notification.snoozed_until = None
             notification.action_taken_at = None
             notification.action_taken_by = None
-            notification.save(update_fields=["payload", "read_at", "snoozed_until", "action_taken_at", "action_taken_by"])
+            notification.save(
+                update_fields=[
+                    "payload",
+                    "read_at",
+                    "snoozed_until",
+                    "action_taken_at",
+                    "action_taken_by",
+                ]
+            )
         else:
             notification = Notification.objects.create(
                 recipient=owner,
@@ -1040,7 +1152,9 @@ def seed_notifications(*, owner, projects: dict, tasks: dict, messages: dict, no
                 task=task,
                 payload=payload,
             )
-        Notification.objects.filter(pk=notification.pk).update(created_at=now - timedelta(minutes=15))
+        Notification.objects.filter(pk=notification.pk).update(
+            created_at=now - timedelta(minutes=15)
+        )
 
 
 def seed_notification_preferences(*, owner):

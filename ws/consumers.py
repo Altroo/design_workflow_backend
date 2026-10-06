@@ -9,13 +9,26 @@ from .presence import update_presence
 
 
 class ChatConsumer(AsyncWebsocketConsumer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.user = None
+        self.user_group = None
+        self._workflow_groups = ()
+        self._last_group_renewal: float | None = None
+
     async def connect(self):
         self.user = self.scope["user"]
         if not self.user or not self.user.is_authenticated or not self.user.is_active:
             await self.close()
             return
         self.user_group = f"user_{self.user.id}"
-        self._workflow_groups = (self.user_group, "workflow", "chat_public", "maintenance", "presence")
+        self._workflow_groups = (
+            self.user_group,
+            "workflow",
+            "chat_public",
+            "maintenance",
+            "presence",
+        )
         await self._renew_group_memberships(force=True)
         await self.accept()
         await self._update_presence(force=True)
@@ -26,7 +39,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # expiry, without five Redis writes on every ping.
         now = monotonic()
         interval = min(300, self.channel_layer.group_expiry / 2)
-        last_renewal = getattr(self, "_last_group_renewal", None)
+        last_renewal = self._last_group_renewal
         if not force and last_renewal is not None and now - last_renewal < interval:
             return
         for group in self._workflow_groups:
@@ -35,7 +48,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def _update_presence(self, *, connected=True, force=False):
         snapshot = await update_presence(
-            self.channel_layer, self.user.id, self.channel_name, connected=connected,
+            self.channel_layer,
+            self.user.id,
+            self.channel_name,
+            connected=connected,
         )
         if not force and not snapshot.changed:
             return
@@ -50,19 +66,21 @@ class ChatConsumer(AsyncWebsocketConsumer):
             },
         )
 
-    async def disconnect(self, close_code):
-        if hasattr(self, "user_group"):
+    async def disconnect(self, code):
+        if self.user_group is not None:
             for group in self._workflow_groups:
                 await self.channel_layer.group_discard(group, self.channel_name)
             await self._update_presence(connected=False)
 
-    async def receive(self, text_data):
+    async def receive(self, text_data=None, bytes_data=None):
         if not await self._refresh_user():
             await self.close(code=4001)
             return
+        if bytes_data is not None:
+            return
         try:
             payload = json.loads(text_data or "{}")
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return
         if not isinstance(payload, dict):
             return
@@ -82,6 +100,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _refresh_user(self):
         from django.contrib.auth import get_user_model
+
         user = get_user_model().objects.filter(pk=self.user.pk, is_active=True).first()
         if user is None:
             return False
@@ -95,23 +114,40 @@ class ChatConsumer(AsyncWebsocketConsumer):
         from design_workflow.serializers import ChatMessageCreateSerializer
         from design_workflow.services import create_notification
         from design_workflow.views import (
-            broadcast_chat_message, can_access_chat_thread, chat_thread_recipients,
-            extract_chat_mentions, get_chat_message_queryset, sync_linked_thread_participants,
+            broadcast_chat_message,
+            can_access_chat_thread,
+            chat_thread_recipients,
+            extract_chat_mentions,
+            get_chat_message_queryset,
+            sync_linked_thread_participants,
         )
 
         thread_id = payload.get("thread_id")
         body = payload.get("body") or payload.get("message") or ""
-        if not isinstance(thread_id, int) or isinstance(thread_id, bool) or not isinstance(body, str) or not body.strip():
+        if (
+            not isinstance(thread_id, int)
+            or isinstance(thread_id, bool)
+            or not isinstance(body, str)
+            or not body.strip()
+        ):
             return None
-        serializer = ChatMessageCreateSerializer(data={
-            "body": body,
-            **({"reply_to_id": payload["reply_to_id"]} if "reply_to_id" in payload else {}),
-        })
+        serializer = ChatMessageCreateSerializer(
+            data={
+                "body": body,
+                **(
+                    {"reply_to_id": payload["reply_to_id"]}
+                    if "reply_to_id" in payload
+                    else {}
+                ),
+            }
+        )
         if not serializer.is_valid():
             return None
         body = serializer.validated_data["body"].strip()
         try:
-            thread = ChatThread.objects.prefetch_related("participants").get(pk=thread_id)
+            thread = ChatThread.objects.prefetch_related("participants").get(
+                pk=thread_id
+            )
         except ChatThread.DoesNotExist:
             return None
         if not can_access_chat_thread(self.user, thread):
@@ -120,7 +156,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if reply_to and reply_to.thread_id != thread.id:
             return None
         sync_linked_thread_participants(thread, actor=self.user)
-        message = ChatMessage.objects.create(thread=thread, sender=self.user, body=body, reply_to=reply_to)
+        message = ChatMessage.objects.create(
+            thread=thread, sender=self.user, body=body, reply_to=reply_to
+        )
         message.read_by.add(self.user)
         mentioned_users = extract_chat_mentions(body, thread, self.user)
         if mentioned_users:
@@ -130,14 +168,22 @@ class ChatConsumer(AsyncWebsocketConsumer):
             create_notification(
                 recipient=recipient,
                 notification_type=NotificationType.CHAT_MESSAGE,
-                payload={"thread_id": thread.id, "message_id": message.id, "title": self.user.first_name or self.user.email},
+                payload={
+                    "thread_id": thread.id,
+                    "message_id": message.id,
+                    "title": self.user.first_name or self.user.email,
+                },
             )
         for recipient in mentioned_users:
             if recipient.id != self.user.id:
                 create_notification(
                     recipient=recipient,
                     notification_type=NotificationType.CHAT_MESSAGE,
-                    payload={"thread_id": thread.id, "message_id": message.id, "title": f"@ mention from {self.user.first_name or self.user.email}"},
+                    payload={
+                        "thread_id": thread.id,
+                        "message_id": message.id,
+                        "title": f"@ mention from {self.user.first_name or self.user.email}",
+                    },
                 )
         # HTTP and socket sends now share serializers, mention rules,
         # notifications, and the same commit-only broadcast helper.
@@ -155,7 +201,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if not isinstance(thread_id, int):
             return None
         try:
-            thread = ChatThread.objects.prefetch_related("participants").get(pk=thread_id)
+            thread = ChatThread.objects.prefetch_related("participants").get(
+                pk=thread_id
+            )
         except ChatThread.DoesNotExist:
             return None
         if not can_access_chat_thread(self.user, thread):
@@ -167,7 +215,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "user": UserSummarySerializer(self.user).data,
             "is_typing": bool(payload.get("is_typing", True)),
             "is_recording": bool(payload.get("is_recording", True)),
-            "event_type": "chat.recording" if payload.get("type") == "chat.recording" else "chat.typing",
+            "event_type": (
+                "chat.recording"
+                if payload.get("type") == "chat.recording"
+                else "chat.typing"
+            ),
         }
 
     async def _broadcast_typing(self, typing):
@@ -220,7 +272,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
         from design_workflow.views import can_access_chat_thread
 
         message = event.get("message")
-        thread_id = event.get("thread_id") or (message.get("thread") if isinstance(message, dict) else None)
+        thread_id = event.get("thread_id") or (
+            message.get("thread") if isinstance(message, dict) else None
+        )
         if not isinstance(thread_id, int) or isinstance(thread_id, bool):
             return False
         thread = ChatThread.objects.filter(pk=thread_id).first()

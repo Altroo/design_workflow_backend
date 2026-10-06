@@ -4,6 +4,7 @@ from django.contrib.auth.admin import UserAdmin
 from django.template.loader import render_to_string
 
 from account.models import CustomUser
+
 from .forms import CustomAuthShopChangeForm, CustomAuthShopCreationForm
 from .tasks import send_email
 
@@ -44,7 +45,21 @@ class CustomUserAdmin(UserAdmin):
                 )
             },
         ),
-        ("Permissions", {"fields": ("is_active", "is_staff", "is_superuser", "can_view", "can_print", "can_create", "can_edit", "can_delete")}),
+        (
+            "Permissions",
+            {
+                "fields": (
+                    "is_active",
+                    "is_staff",
+                    "is_superuser",
+                    "can_view",
+                    "can_print",
+                    "can_create",
+                    "can_edit",
+                    "can_delete",
+                )
+            },
+        ),
         ("Date d'activité", {"fields": ("date_joined", "date_updated", "last_login")}),
     )
     add_fieldsets = (
@@ -62,14 +77,34 @@ class CustomUserAdmin(UserAdmin):
                 )
             },
         ),
-        ("Permissions", {"fields": ("is_active", "is_staff", "is_superuser", "can_view", "can_print", "can_create", "can_edit", "can_delete")}),
+        (
+            "Permissions",
+            {
+                "fields": (
+                    "is_active",
+                    "is_staff",
+                    "is_superuser",
+                    "can_view",
+                    "can_print",
+                    "can_create",
+                    "can_edit",
+                    "can_delete",
+                )
+            },
+        ),
     )
     search_fields = ("email",)
     ordering = ("-id",)
 
-    def user_change_password(self, request, id, form_url=""):
+    # Django's inherited admin URL passes this argument by the name `id`.
+    # noinspection PyShadowingBuiltins
+    def user_change_password(
+        self, request, id, form_url=""
+    ):  # pylint: disable=redefined-builtin
         """Override the password change view to send an email with the new password."""
         user = self.get_object(request, id)
+        if user is None or not self.has_change_permission(request, user):
+            return super().user_change_password(request, id, form_url)
         if request.method == "POST":
             form = self.change_password_form(user, request.POST)
             if form.is_valid():

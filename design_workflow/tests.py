@@ -29,14 +29,14 @@ from design_workflow.models import (
     TaskAttachment,
     TaskChecklist,
     TaskChecklistItem,
+    TaskComment,
     TaskLabel,
     TaskReviewState,
-    TaskComment,
     TaskStatus,
     TimeEntry,
 )
-from design_workflow.tasks import generate_notification_digests
 from design_workflow.services import count_working_minutes
+from design_workflow.tasks import generate_notification_digests
 
 User = get_user_model()
 
@@ -116,7 +116,9 @@ class TestProjectDetailPayload:
         assert len(response.data["recent_comments"]) == 1
         assert response.data["recent_comments"][0]["task_id"] == task.id
         assert response.data["recent_comments"][0]["task_title"] == task.title
-        assert response.data["recent_comments"][0]["body"] == "Waiting for fabric samples."
+        assert (
+            response.data["recent_comments"][0]["body"] == "Waiting for fabric samples."
+        )
         assert len(response.data["recent_activity"]) == 1
         assert response.data["recent_activity"][0]["task_id"] == task.id
         assert response.data["recent_activity"][0]["task_title"] == task.title
@@ -206,10 +208,13 @@ class TestProjectArchiving:
         assert completed_task.archived is True
         assert task.archived_at == project.archived_at
         assert completed_task.archived_at == project.archived_at
-        assert TaskActivity.objects.filter(
-            task__in=[task, completed_task],
-            action_type=TaskActivityType.PROJECT_ARCHIVED,
-        ).count() == 2
+        assert (
+            TaskActivity.objects.filter(
+                task__in=[task, completed_task],
+                action_type=TaskActivityType.PROJECT_ARCHIVED,
+            ).count()
+            == 2
+        )
 
     def test_designer_cannot_archive_project(self):
         manager = make_manager("manager-project-archive-denied@test.com")
@@ -308,7 +313,9 @@ class TestProjectArchiving:
 class TestTaskLabelManagement:
     def test_manager_can_update_label(self):
         manager = make_manager("manager-label-update@test.com")
-        label = TaskLabel.objects.create(name="Old label", color="#64748b", created_by=manager)
+        label = TaskLabel.objects.create(
+            name="Old label", color="#64748b", created_by=manager
+        )
         client = APIClient()
         client.force_authenticate(user=manager)
 
@@ -326,7 +333,9 @@ class TestTaskLabelManagement:
     def test_user_cannot_update_another_users_label(self):
         manager = make_manager("manager-label-owner@test.com")
         designer = make_designer("designer-label-update@test.com")
-        label = TaskLabel.objects.create(name="Protected label", color="#64748b", created_by=manager)
+        label = TaskLabel.objects.create(
+            name="Protected label", color="#64748b", created_by=manager
+        )
         client = APIClient()
         client.force_authenticate(user=designer)
 
@@ -375,7 +384,9 @@ class TestChatPrivateThreadRecipients:
         )
 
         assert response.status_code == 400
-        assert not ChatThread.objects.filter(kind=ChatThreadKind.PRIVATE, participants=inactive_user).exists()
+        assert not ChatThread.objects.filter(
+            kind=ChatThreadKind.PRIVATE, participants=inactive_user
+        ).exists()
 
 
 class TestTaskCreation:
@@ -400,7 +411,7 @@ class TestTaskCreation:
         assert response.data["manager"]["id"] == designer.id
 
     def test_project_owner_can_create_task_for_another_user_with_an_estimate(self):
-        manager = make_manager("manager-task-create@test.com")
+        make_manager("manager-task-create@test.com")
         designer = make_designer("designer-task-create@test.com")
         other_designer = make_designer("other-designer-task-create@test.com")
         project = Project.objects.create(
@@ -456,17 +467,25 @@ class TestTaskChecklists:
             created_by=manager,
             updated_by=manager,
         )
-        checklist = TaskChecklist.objects.create(task=task, title="Final delivery checklist", created_by=manager)
-        TaskChecklistItem.objects.create(task=task, checklist=checklist, title="Confirm handoff", created_by=manager)
+        checklist = TaskChecklist.objects.create(
+            task=task, title="Final delivery checklist", created_by=manager
+        )
+        TaskChecklistItem.objects.create(
+            task=task, checklist=checklist, title="Confirm handoff", created_by=manager
+        )
 
         client = APIClient()
         client.force_authenticate(user=manager)
-        response = client.delete(f"/api/design-workflow/tasks/{task.id}/checklists/{checklist.id}/")
+        response = client.delete(
+            f"/api/design-workflow/tasks/{task.id}/checklists/{checklist.id}/"
+        )
 
         assert response.status_code == 204
         assert not TaskChecklist.objects.filter(pk=checklist.id).exists()
         assert task.checklist_items.count() == 0
-        activity = TaskActivity.objects.filter(task=task, action_type=TaskActivityType.CHECKLIST_UPDATED).latest("created_at")
+        activity = TaskActivity.objects.filter(
+            task=task, action_type=TaskActivityType.CHECKLIST_UPDATED
+        ).latest("created_at")
         assert activity.metadata["action"] == "deleted"
 
     def test_outside_designer_cannot_delete_checklist_group(self):
@@ -489,11 +508,17 @@ class TestTaskChecklists:
             created_by=manager,
             updated_by=manager,
         )
-        checklist = TaskChecklist.objects.create(task=task, title="Locked checklist", created_by=manager)
+        checklist = TaskChecklist.objects.create(
+            task=task, title="Locked checklist", created_by=manager
+        )
 
         client = APIClient()
-        client.force_authenticate(user=make_designer("outsider-checklist-denied@test.com"))
-        response = client.delete(f"/api/design-workflow/tasks/{task.id}/checklists/{checklist.id}/")
+        client.force_authenticate(
+            user=make_designer("outsider-checklist-denied@test.com")
+        )
+        response = client.delete(
+            f"/api/design-workflow/tasks/{task.id}/checklists/{checklist.id}/"
+        )
 
         assert response.status_code == 404
         assert TaskChecklist.objects.filter(pk=checklist.id).exists()
@@ -579,7 +604,10 @@ class TestTaskWorkDayAutomation:
         assert task.work_started_at is None
         assert task.actual_minutes == 960
         assert task.time_entries.count() == 2
-        assert set(task.time_entries.values_list("user_id", flat=True)) == {manager.pk, designer.pk}
+        assert set(task.time_entries.values_list("user_id", flat=True)) == {
+            manager.pk,
+            designer.pk,
+        }
         assert task.time_entries.first().minutes == 480
 
     def test_work_schedule_counts_weekdays_saturday_and_skips_sunday(self):
@@ -653,14 +681,23 @@ class TestPremiumBoardViews:
 
         response = client.post(
             "/api/design-workflow/views/",
-            {"name": "Team blocked", "visibility": "team", "filters": {"blocked": True}},
+            {
+                "name": "Team blocked",
+                "visibility": "team",
+                "filters": {"blocked": True},
+            },
             format="json",
         )
         assert response.status_code == 400
 
         response = client.post(
             "/api/design-workflow/views/",
-            {"name": "My review", "visibility": "private", "filters": {"review_state": "needs_review"}, "is_default": True},
+            {
+                "name": "My review",
+                "visibility": "private",
+                "filters": {"review_state": "needs_review"},
+                "is_default": True,
+            },
             format="json",
         )
         assert response.status_code == 201
@@ -670,7 +707,11 @@ class TestPremiumBoardViews:
         client.force_authenticate(user=manager)
         response = client.post(
             "/api/design-workflow/views/",
-            {"name": "Studio reviews", "visibility": "team", "filters": {"review_state": "needs_review"}},
+            {
+                "name": "Studio reviews",
+                "visibility": "team",
+                "filters": {"review_state": "needs_review"},
+            },
             format="json",
         )
         assert response.status_code == 201
@@ -709,8 +750,12 @@ class TestPremiumBoardViews:
             mime_type="image/png",
             size=12,
         )
-        thread = ChatThread.objects.create(kind=ChatThreadKind.PUBLIC, title="Studio public")
-        ChatMessage.objects.create(thread=thread, sender=designer, body="Atrium approval note")
+        thread = ChatThread.objects.create(
+            kind=ChatThreadKind.PUBLIC, title="Studio public"
+        )
+        ChatMessage.objects.create(
+            thread=thread, sender=designer, body="Atrium approval note"
+        )
 
         client = APIClient()
         client.force_authenticate(user=manager)
@@ -749,7 +794,9 @@ class TestPremiumBoardViews:
         response = client.get("/api/design-workflow/search/?q=nadia&types=task")
 
         assert response.status_code == 200
-        assert [item["id"] for item in response.data if item["type"] == "task"] == [task.id]
+        assert [item["id"] for item in response.data if item["type"] == "task"] == [
+            task.id
+        ]
 
     def test_workspace_search_includes_read_only_projects_and_tasks(self):
         manager = make_manager("manager-search-scope@test.com")
@@ -812,12 +859,22 @@ class TestPremiumBoardViews:
 
         assert response.status_code == 200
         result_titles = {item["title"] for item in response.data}
-        assert {"Studio visible task", "Studio visible project", "studio-visible.png"}.issubset(result_titles)
-        assert {"Studio hidden task", "Studio hidden project", "studio-hidden.png"}.issubset(result_titles)
+        assert {
+            "Studio visible task",
+            "Studio visible project",
+            "studio-visible.png",
+        }.issubset(result_titles)
+        assert {
+            "Studio hidden task",
+            "Studio hidden project",
+            "studio-hidden.png",
+        }.issubset(result_titles)
 
 
 class TestWorkflowAccessContracts:
-    def test_project_creator_can_list_basic_info_after_assigning_project_to_someone_else(self):
+    def test_project_creator_can_list_basic_info_after_assigning_project_to_someone_else(
+        self,
+    ):
         creator = make_designer("project-creator@test.com")
         assignee = make_designer("project-assignee@test.com")
         client = APIClient()
@@ -847,7 +904,9 @@ class TestWorkflowAccessContracts:
         assert accessible_list.status_code == 200
         assert created.data["id"] not in {item["id"] for item in accessible_list.data}
         assert directory_list.status_code == 200
-        listed_project = next(item for item in directory_list.data if item["id"] == created.data["id"])
+        listed_project = next(
+            item for item in directory_list.data if item["id"] == created.data["id"]
+        )
         assert listed_project["name"] == "Assigned brand project"
         assert listed_project["manager"]["id"] == assignee.id
         assert listed_project["can_work"] is False
@@ -900,21 +959,43 @@ class TestWorkflowAccessContracts:
         client = APIClient()
         client.force_authenticate(user=designer)
 
-        assert client.get(f"/api/design-workflow/projects/{visible_project.id}/").status_code == 200
-        assert client.get(f"/api/design-workflow/tasks/{visible_task.id}/").status_code == 200
-        hidden_project_response = client.get(f"/api/design-workflow/projects/{hidden_project.id}/")
-        hidden_task_response = client.get(f"/api/design-workflow/tasks/{hidden_task.id}/")
+        assert (
+            client.get(
+                f"/api/design-workflow/projects/{visible_project.id}/"
+            ).status_code
+            == 200
+        )
+        assert (
+            client.get(f"/api/design-workflow/tasks/{visible_task.id}/").status_code
+            == 200
+        )
+        hidden_project_response = client.get(
+            f"/api/design-workflow/projects/{hidden_project.id}/"
+        )
+        hidden_task_response = client.get(
+            f"/api/design-workflow/tasks/{hidden_task.id}/"
+        )
         assert hidden_project_response.status_code == 200
         assert hidden_project_response.data["can_work"] is False
-        assert {item["id"] for item in hidden_project_response.data["tasks"]} == {hidden_task.id}
+        assert {item["id"] for item in hidden_project_response.data["tasks"]} == {
+            hidden_task.id
+        }
         assert hidden_task_response.status_code == 200
         assert hidden_task_response.data["can_edit"] is False
-        assert client.patch(
-            f"/api/design-workflow/tasks/{hidden_task.id}/",
-            {"title": "Forbidden edit"},
-            format="json",
-        ).status_code == 403
-        assert client.get(f"/api/design-workflow/attachments/{hidden_attachment.id}/annotations/").status_code == 404
+        assert (
+            client.patch(
+                f"/api/design-workflow/tasks/{hidden_task.id}/",
+                {"title": "Forbidden edit"},
+                format="json",
+            ).status_code
+            == 403
+        )
+        assert (
+            client.get(
+                f"/api/design-workflow/attachments/{hidden_attachment.id}/annotations/"
+            ).status_code
+            == 404
+        )
 
         list_response = client.get("/api/design-workflow/tasks/")
         assert list_response.status_code == 200
@@ -946,11 +1027,14 @@ class TestWorkflowAccessContracts:
         task_detail = client.get(f"/api/design-workflow/tasks/{assigned_task.id}/")
         assert task_detail.status_code == 200
         assert task_detail.data["can_edit"] is True
-        assert client.patch(
-            f"/api/design-workflow/tasks/{assigned_task.id}/status/",
-            {"status": TaskStatus.IN_PROGRESS},
-            format="json",
-        ).status_code == 200
+        assert (
+            client.patch(
+                f"/api/design-workflow/tasks/{assigned_task.id}/status/",
+                {"status": TaskStatus.IN_PROGRESS},
+                format="json",
+            ).status_code
+            == 200
+        )
 
         create_response = client.post(
             "/api/design-workflow/tasks/",
@@ -989,7 +1073,9 @@ class TestLinkedChatWorkflow:
         ChatThread.objects.create(kind=ChatThreadKind.PUBLIC, title="Studio public")
 
         with pytest.raises(IntegrityError), transaction.atomic():
-            ChatThread.objects.create(kind=ChatThreadKind.PUBLIC, title="Duplicate public")
+            ChatThread.objects.create(
+                kind=ChatThreadKind.PUBLIC, title="Duplicate public"
+            )
 
     def test_project_and_task_threads_are_accessible_to_work_context_users(self):
         manager = make_manager("manager-linked-chat@test.com")
@@ -1020,8 +1106,13 @@ class TestLinkedChatWorkflow:
             format="json",
         )
         assert project_response.status_code == 201
-        project_thread = ChatThread.objects.get(kind=ChatThreadKind.PROJECT, project=project)
-        assert project_thread.participants.filter(id__in=[manager.id, designer.id]).count() == 2
+        project_thread = ChatThread.objects.get(
+            kind=ChatThreadKind.PROJECT, project=project
+        )
+        assert (
+            project_thread.participants.filter(id__in=[manager.id, designer.id]).count()
+            == 2
+        )
 
         client.force_authenticate(user=designer)
         list_response = client.get("/api/design-workflow/chat/threads/")
@@ -1066,8 +1157,12 @@ class TestLinkedChatWorkflow:
             priority=Priority.MEDIUM,
             status=ProjectStatus.ACTIVE,
         )
-        thread = ChatThread.objects.create(kind=ChatThreadKind.PUBLIC, title="Studio public")
-        message = ChatMessage.objects.create(thread=thread, sender=designer, body="Turn this into a task.")
+        thread = ChatThread.objects.create(
+            kind=ChatThreadKind.PUBLIC, title="Studio public"
+        )
+        message = ChatMessage.objects.create(
+            thread=thread, sender=designer, body="Turn this into a task."
+        )
 
         client = APIClient()
         client.force_authenticate(user=manager)
@@ -1122,7 +1217,10 @@ class TestDesignReviewWorkflow:
         client.force_authenticate(user=designer)
         response = client.post(
             f"/api/design-workflow/tasks/{task.id}/review/",
-            {"review_state": TaskReviewState.NEEDS_REVIEW, "notes": "Ready for approval"},
+            {
+                "review_state": TaskReviewState.NEEDS_REVIEW,
+                "notes": "Ready for approval",
+            },
             format="json",
         )
 
@@ -1131,7 +1229,9 @@ class TestDesignReviewWorkflow:
         assert task.status == TaskStatus.IN_REVIEW
         assert task.review_state == TaskReviewState.NEEDS_REVIEW
         assert task.review_requested_by == designer
-        assert Notification.objects.filter(recipient=manager, type=NotificationType.REVIEW_REQUESTED, task=task).exists()
+        assert Notification.objects.filter(
+            recipient=manager, type=NotificationType.REVIEW_REQUESTED, task=task
+        ).exists()
         assert TaskActivity.objects.filter(
             task=task,
             action_type=TaskActivityType.STATUS_CHANGED,
@@ -1192,23 +1292,32 @@ class TestDesignReviewWorkflow:
         client = APIClient()
 
         client.force_authenticate(user=manager)
-        assert client.post(
-            f"/api/design-workflow/tasks/{task.id}/review/",
-            {"review_state": TaskReviewState.NEEDS_REVIEW},
-            format="json",
-        ).status_code == 403
-        assert client.post(
-            f"/api/design-workflow/tasks/{task.id}/review/",
-            {"review_state": TaskReviewState.APPROVED},
-            format="json",
-        ).status_code == 400
+        assert (
+            client.post(
+                f"/api/design-workflow/tasks/{task.id}/review/",
+                {"review_state": TaskReviewState.NEEDS_REVIEW},
+                format="json",
+            ).status_code
+            == 403
+        )
+        assert (
+            client.post(
+                f"/api/design-workflow/tasks/{task.id}/review/",
+                {"review_state": TaskReviewState.APPROVED},
+                format="json",
+            ).status_code
+            == 400
+        )
 
         client.force_authenticate(user=designer)
-        assert client.post(
-            f"/api/design-workflow/tasks/{task.id}/review/",
-            {"review_state": TaskReviewState.APPROVED},
-            format="json",
-        ).status_code == 403
+        assert (
+            client.post(
+                f"/api/design-workflow/tasks/{task.id}/review/",
+                {"review_state": TaskReviewState.APPROVED},
+                format="json",
+            ).status_code
+            == 403
+        )
 
 
 class TestDesignerBoardMediaPermissions:
@@ -1237,7 +1346,9 @@ class TestDesignerBoardMediaPermissions:
             "/api/design-workflow/tasks/reorder/",
             {
                 "moved_task_id": task.id,
-                "tasks": [{"id": task.id, "status": TaskStatus.IN_PROGRESS, "sort_order": 0}],
+                "tasks": [
+                    {"id": task.id, "status": TaskStatus.IN_PROGRESS, "sort_order": 0}
+                ],
             },
             format="json",
         )
@@ -1246,7 +1357,9 @@ class TestDesignerBoardMediaPermissions:
         task.refresh_from_db()
         assert task.status == TaskStatus.IN_PROGRESS
 
-    def test_project_owner_and_task_assignee_can_add_and_delete_task_media(self, settings, tmp_path):
+    def test_project_owner_and_task_assignee_can_add_and_delete_task_media(
+        self, settings, tmp_path
+    ):
         settings.MEDIA_ROOT = tmp_path
         owner = make_designer("designer-owner-media@test.com")
         other_designer = make_designer("designer-assignee-media@test.com")
@@ -1268,20 +1381,29 @@ class TestDesignerBoardMediaPermissions:
         client = APIClient()
         client.force_authenticate(user=owner)
 
-        assert client.post(
-            f"/api/design-workflow/tasks/{task.id}/attachments/",
-            {
-                "file": SimpleUploadedFile("owner-brief.txt", b"brief", content_type="text/plain"),
-                "name": "Owner brief",
-            },
-            format="multipart",
-        ).status_code == 201
+        assert (
+            client.post(
+                f"/api/design-workflow/tasks/{task.id}/attachments/",
+                {
+                    "file": SimpleUploadedFile(
+                        "owner-brief.txt", b"brief", content_type="text/plain"
+                    ),
+                    "name": "Owner brief",
+                },
+                format="multipart",
+            ).status_code
+            == 201
+        )
 
         client.force_authenticate(user=other_designer)
 
         missing_label = client.post(
             f"/api/design-workflow/tasks/{task.id}/attachments/",
-            {"file": SimpleUploadedFile("brief.txt", b"brief", content_type="text/plain")},
+            {
+                "file": SimpleUploadedFile(
+                    "brief.txt", b"brief", content_type="text/plain"
+                )
+            },
             format="multipart",
         )
         assert missing_label.status_code == 400
@@ -1289,7 +1411,9 @@ class TestDesignerBoardMediaPermissions:
         attachment_response = client.post(
             f"/api/design-workflow/tasks/{task.id}/attachments/",
             {
-                "file": SimpleUploadedFile("brief.txt", b"brief", content_type="text/plain"),
+                "file": SimpleUploadedFile(
+                    "brief.txt", b"brief", content_type="text/plain"
+                ),
                 "name": "Brief client final",
             },
             format="multipart",
@@ -1297,9 +1421,12 @@ class TestDesignerBoardMediaPermissions:
         assert attachment_response.status_code == 201
         assert attachment_response.data["name"] == "Brief client final"
         attachment_id = attachment_response.data["id"]
-        assert client.delete(
-            f"/api/design-workflow/tasks/{task.id}/attachments/{attachment_id}/"
-        ).status_code == 204
+        assert (
+            client.delete(
+                f"/api/design-workflow/tasks/{task.id}/attachments/{attachment_id}/"
+            ).status_code
+            == 204
+        )
 
         cover_response = client.post(
             f"/api/design-workflow/tasks/{task.id}/cover/",
@@ -1315,7 +1442,10 @@ class TestDesignerBoardMediaPermissions:
         )
         assert cover_response.status_code == 200
         assert cover_response.data["cover_image_label"] == "Aperçu de la carte"
-        assert client.delete(f"/api/design-workflow/tasks/{task.id}/cover/").status_code == 200
+        assert (
+            client.delete(f"/api/design-workflow/tasks/{task.id}/cover/").status_code
+            == 200
+        )
         task.refresh_from_db()
         assert task.cover_image_label == ""
 
@@ -1434,7 +1564,12 @@ class TestDesignReviewArtifacts:
 
         response = client.post(
             f"/api/design-workflow/attachments/{attachment.id}/annotations/",
-            {"version_id": version.id, "x_percent": "42.50", "y_percent": "30.00", "body": "Move pendant lower."},
+            {
+                "version_id": version.id,
+                "x_percent": "42.50",
+                "y_percent": "30.00",
+                "body": "Move pendant lower.",
+            },
             format="json",
         )
 
@@ -1540,7 +1675,9 @@ class TestNotificationActions:
 
         assert created_count == 1
         assert created_again == 0
-        digest = Notification.objects.get(recipient=designer, type=NotificationType.WORKFLOW_DIGEST)
+        digest = Notification.objects.get(
+            recipient=designer, type=NotificationType.WORKFLOW_DIGEST
+        )
         assert digest.payload["frequency"] == NotificationDigestFrequency.DAILY
         assert digest.payload["total_count"] == 2
         assert digest.payload["by_type"][NotificationType.TASK_ASSIGNED] == 1
@@ -1558,8 +1695,12 @@ class TestWorkflowReports:
         manager = make_manager("manager-report-filters@test.com")
         first_user = make_designer("first-report-user@test.com")
         second_user = make_designer("second-report-user@test.com")
-        first_project = Project.objects.create(name="First report project", manager=manager)
-        second_project = Project.objects.create(name="Second report project", manager=manager)
+        first_project = Project.objects.create(
+            name="First report project", manager=manager
+        )
+        second_project = Project.objects.create(
+            name="Second report project", manager=manager
+        )
         first_task = Task.objects.create(
             project=first_project,
             title="First filtered task",
@@ -1587,9 +1728,9 @@ class TestWorkflowReports:
         )
 
         assert time_response.status_code == 200
-        assert [(row["project"]["id"], row["minutes"]) for row in time_response.data] == [
-            (first_project.id, 120)
-        ]
+        assert [
+            (row["project"]["id"], row["minutes"]) for row in time_response.data
+        ] == [(first_project.id, 120)]
         assert workflow_response.status_code == 200
         assert workflow_response.data["tasks_sampled"] == 1
         assert workflow_response.data["capacity"][0]["user"]["id"] == first_user.id
@@ -1618,7 +1759,9 @@ class TestWorkflowReports:
         response = client.get("/api/design-workflow/workload/")
 
         assert response.status_code == 200
-        designer_row = next(row for row in response.data if row["user"]["id"] == designer.id)
+        designer_row = next(
+            row for row in response.data if row["user"]["id"] == designer.id
+        )
         assert designer_row["user"]["avatar"] is None
         assert designer_row["open_tasks"] == 1
 
@@ -1646,14 +1789,18 @@ class TestWorkflowReports:
             created_by=manager,
             updated_by=manager,
         )
-        Task.objects.filter(pk=done_task.pk).update(created_at=now - timedelta(days=5), completed_at=now)
+        Task.objects.filter(pk=done_task.pk).update(
+            created_at=now - timedelta(days=5), completed_at=now
+        )
         progress_activity = TaskActivity.objects.create(
             task=done_task,
             actor=designer,
             action_type=TaskActivityType.STATUS_CHANGED,
             metadata={"status": TaskStatus.IN_PROGRESS},
         )
-        TaskActivity.objects.filter(pk=progress_activity.pk).update(created_at=now - timedelta(days=3))
+        TaskActivity.objects.filter(pk=progress_activity.pk).update(
+            created_at=now - timedelta(days=3)
+        )
 
         blocked_task = Task.objects.create(
             project=project,
@@ -1672,7 +1819,9 @@ class TestWorkflowReports:
             action_type=TaskActivityType.STATUS_CHANGED,
             metadata={"status": TaskStatus.BLOCKED},
         )
-        TaskActivity.objects.filter(pk=blocked_activity.pk).update(created_at=now - timedelta(hours=2))
+        TaskActivity.objects.filter(pk=blocked_activity.pk).update(
+            created_at=now - timedelta(hours=2)
+        )
 
         Task.objects.create(
             project=project,
@@ -1700,6 +1849,8 @@ class TestWorkflowReports:
         assert response.data["blocked_tasks"] == 1
         assert response.data["blocked_time_minutes"] >= 100
         assert response.data["review_bottlenecks"]["needs_review"] == 1
-        assert response.data["estimate_vs_actual"]["estimated_minutes"] == 2160  # Two working members per card.
+        assert (
+            response.data["estimate_vs_actual"]["estimated_minutes"] == 2160
+        )  # Two working members per card.
         assert response.data["estimate_vs_actual"]["actual_minutes"] == 600
         assert response.data["capacity"][0]["user"]["id"] == designer.id

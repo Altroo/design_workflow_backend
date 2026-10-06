@@ -9,20 +9,21 @@ from django.utils.translation import gettext as _
 from rest_framework import serializers
 
 from design_workflow_backend.utils import ImageProcessor
+
 from .models import CustomUser
 
 
 def normalize_gender_value(value):
-    if value in (None, ''):
-        return ''
+    if value in (None, ""):
+        return ""
     normalized = str(value).strip().lower()
-    if normalized in {'h', 'homme'}:
-        return 'H'
-    if normalized in {'f', 'femme'}:
-        return 'F'
+    if normalized in {"h", "homme"}:
+        return "H"
+    if normalized in {"f", "femme"}:
+        return "F"
     raise serializers.ValidationError(
         _("Valeur du sexe invalide : %(value)s. Doit etre 'Homme' ou 'Femme'.")
-        % {'value': value}
+        % {"value": value}
     )
 
 
@@ -56,7 +57,7 @@ class CreateAccountSerializer(serializers.ModelSerializer):
             except Exception as e:
                 raise serializers.ValidationError(
                     f"Invalid file upload for {field_name}: {str(e)}"
-                )
+                ) from e
         if isinstance(field_value, str) and field_value.startswith("data:image"):
             try:
                 if ";base64," not in field_value:
@@ -87,7 +88,7 @@ class CreateAccountSerializer(serializers.ModelSerializer):
                 except Exception as decode_error:
                     raise serializers.ValidationError(
                         f"Encodage base64 invalide pour {field_name}: {str(decode_error)}"
-                    )
+                    ) from decode_error
                 result = ImageProcessor.convert_to_webp(data)
                 if result is None:
                     raise serializers.ValidationError(
@@ -99,7 +100,7 @@ class CreateAccountSerializer(serializers.ModelSerializer):
             except Exception as e:
                 raise serializers.ValidationError(
                     f"Données d'image base64 invalides pour {field_name}: {str(e)}"
-                )
+                ) from e
         raise serializers.ValidationError(f"Format d'image invalide pour {field_name}")
 
     def create(self, validated_data):
@@ -283,7 +284,7 @@ class ProfilePutSerializer(serializers.ModelSerializer):
             except Exception as e:
                 raise serializers.ValidationError(
                     f"Invalid file upload for {field_name}: {str(e)}"
-                )
+                ) from e
         if isinstance(field_value, str) and field_value.startswith("data:image"):
             try:
                 if ";base64," not in field_value:
@@ -314,7 +315,7 @@ class ProfilePutSerializer(serializers.ModelSerializer):
                 except Exception as decode_error:
                     raise serializers.ValidationError(
                         f"Encodage base64 invalide pour {field_name}: {str(decode_error)}"
-                    )
+                    ) from decode_error
                 webp_file = ImageProcessor.convert_to_webp(data)
                 if webp_file is None:
                     raise serializers.ValidationError(
@@ -326,7 +327,7 @@ class ProfilePutSerializer(serializers.ModelSerializer):
             except Exception as e:
                 raise serializers.ValidationError(
                     f"Données d'image base64 invalides pour {field_name}: {str(e)}"
-                )
+                ) from e
         raise serializers.ValidationError(f"Format d'image invalide pour {field_name}")
 
     def update(self, instance, validated_data):
@@ -343,7 +344,7 @@ class ProfilePutSerializer(serializers.ModelSerializer):
         )
 
         if avatar_provided:
-            avatar_file, avatar_bytes, is_url = self._process_image_field(
+            avatar_file, avatar_bytes, _ = self._process_image_field(
                 "avatar", validated_data
             )
             if avatar_value is None or avatar_value == "":
@@ -354,7 +355,7 @@ class ProfilePutSerializer(serializers.ModelSerializer):
                 instance.avatar_cropped = None
 
         if avatar_cropped_provided:
-            avatar_cropped_file, _, is_url = self._process_image_field(
+            avatar_cropped_file, _, _ = self._process_image_field(
                 "avatar_cropped", validated_data
             )
             if avatar_cropped_value is None or avatar_cropped_value == "":
@@ -396,7 +397,7 @@ class ProfilePutSerializer(serializers.ModelSerializer):
         try:
             if field.path and Path(field.path).exists():
                 remove(field.path)
-        except (ValueError, FileNotFoundError, OSError):
+        except ValueError, FileNotFoundError, OSError:
             pass
         field.delete(save=False)
 

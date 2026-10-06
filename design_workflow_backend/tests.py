@@ -1,29 +1,29 @@
 import base64
-import binascii
 from io import BytesIO
 from unittest.mock import patch
+
 import numpy as np
 import pytest
-from PIL import Image
 from django.core.files.base import ContentFile
+from PIL import Image
 from rest_framework import serializers
 from rest_framework.exceptions import (
     APIException,
     AuthenticationFailed,
-    PermissionDenied,
-    NotFound,
     MethodNotAllowed,
+    NotFound,
+    PermissionDenied,
     Throttled,
+    ValidationError,
 )
-from rest_framework.exceptions import ValidationError
 from rest_framework.request import Request
 from rest_framework.test import APIRequestFactory
 
 from .utils import (
-    ImageProcessor,
     Base64ImageField,
-    api_exception_handler,
     CustomPagination,
+    ImageProcessor,
+    api_exception_handler,
 )
 
 
@@ -39,6 +39,16 @@ class TestImageProcessor:
 
         assert result is not None
         assert result.shape == (100, 100, 3)
+
+    @pytest.mark.parametrize("data", [b"", b"not an image"])
+    def test_load_image_rejects_empty_or_invalid_data(self, data):
+        with pytest.raises(ValueError, match="Image data"):
+            ImageProcessor.load_image_from_io(BytesIO(data))
+
+    def test_file_extension_handles_image_without_format(self):
+        with patch("design_workflow_backend.utils.Image.open") as open_image:
+            open_image.return_value.format = None
+            assert Base64ImageField.get_file_extension("image", b"image") == "jpg"
 
     def test_from_img_to_io(self):
         image_array = np.zeros((100, 100, 3), dtype=np.uint8)
@@ -240,11 +250,16 @@ class TestBase64ImageField:
         ext = Base64ImageField.get_file_extension("test", b"not-an-image")
         assert ext == "jpg"
 
-    def test_to_internal_value_with_invalid_base64(self):
+    @pytest.mark.parametrize(
+        "data",
+        ["invalid_base64_string!!!", "data:image/png;base64,invalid_base64_string!!!"],
+    )
+    def test_to_internal_value_with_invalid_base64(self, data):
         """Test to_internal_value raises on invalid base64 string."""
         field = Base64ImageField()
-        with pytest.raises(binascii.Error):
-            field.to_internal_value("invalid_base64_string!!!")
+        with pytest.raises(serializers.ValidationError) as error:
+            field.to_internal_value(data)
+        assert error.value.get_codes() == ["invalid_image"]
 
     def test_to_internal_value_with_file_object(self):
         """Test to_internal_value with a file object (delegates to parent)."""
@@ -265,7 +280,7 @@ class TestBase64ImageField:
 class TestApiExceptionHandler:
     factory = APIRequestFactory()
 
-    def _make_context(self, method="get", path="/test/"):
+    def _make_context(self, path="/test/"):
         request = self.factory.get(path)
         return {"request": Request(request), "view": None}
 

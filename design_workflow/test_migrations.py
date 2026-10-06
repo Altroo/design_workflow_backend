@@ -8,7 +8,10 @@ def test_duplicate_public_threads_are_merged_before_unique_constraint():
     account_target = ("accounts", "0004_customuser_sso_subject")
     migrate_from = [
         account_target,
-        ("design_workflow", "0012_historicalattachmentannotation_historicalchatmessage_and_more"),
+        (
+            "design_workflow",
+            "0012_historicalattachmentannotation_historicalchatmessage_and_more",
+        ),
     ]
     migrate_to = [
         account_target,
@@ -50,12 +53,19 @@ def test_duplicate_public_threads_are_merged_before_unique_constraint():
 @pytest.mark.django_db(transaction=True)
 def test_running_shared_sessions_migration_preserves_legacy_worker_and_logged_time():
     from datetime import timedelta
+
     from django.utils import timezone
 
     executor = MigrationExecutor(connection)
     latest = executor.loader.graph.leaf_nodes()
-    previous = [("accounts", "0004_customuser_sso_subject"), ("design_workflow", "0018_project_collaborators")]
-    target = [("accounts", "0004_customuser_sso_subject"), ("design_workflow", "0019_task_work_sessions")]
+    previous = [
+        ("accounts", "0004_customuser_sso_subject"),
+        ("design_workflow", "0018_project_collaborators"),
+    ]
+    target = [
+        ("accounts", "0004_customuser_sso_subject"),
+        ("design_workflow", "0019_task_work_sessions"),
+    ]
     try:
         executor.migrate(previous)
         apps = executor.loader.project_state(previous).apps
@@ -63,23 +73,49 @@ def test_running_shared_sessions_migration_preserves_legacy_worker_and_logged_ti
         Project = apps.get_model("design_workflow", "Project")
         Task = apps.get_model("design_workflow", "Task")
         TimeEntry = apps.get_model("design_workflow", "TimeEntry")
-        owner = User.objects.create(email="session-migration-owner@test.com", is_active=True)
-        member = User.objects.create(email="session-migration-member@test.com", is_active=True)
-        inactive = User.objects.create(email="session-migration-inactive@test.com", is_active=False)
+        owner = User.objects.create(
+            email="session-migration-owner@test.com", is_active=True
+        )
+        member = User.objects.create(
+            email="session-migration-member@test.com", is_active=True
+        )
+        inactive = User.objects.create(
+            email="session-migration-inactive@test.com", is_active=False
+        )
         project = Project.objects.create(name="Running migration", manager=owner)
         project.collaborators.add(owner, member, inactive)
         old_start = timezone.now() - timedelta(hours=2)
-        task = Task.objects.create(project=project, title="Running", current_assignee=owner,
-                                   created_by=owner, updated_by=owner, status="in_progress", work_started_at=old_start)
-        entry = TimeEntry.objects.create(task=task, user=member, minutes=50, work_date=timezone.localdate())
+        task = Task.objects.create(
+            project=project,
+            title="Running",
+            current_assignee=owner,
+            created_by=owner,
+            updated_by=owner,
+            status="in_progress",
+            work_started_at=old_start,
+        )
+        entry = TimeEntry.objects.create(
+            task=task, user=member, minutes=50, work_date=timezone.localdate()
+        )
         earliest_new_start = timezone.now()
         executor = MigrationExecutor(connection)
         executor.migrate(target)
         apps = executor.loader.project_state(target).apps
         Session = apps.get_model("design_workflow", "TaskWorkSession")
         assert Session.objects.filter(task_id=task.pk).count() == 2
-        assert Session.objects.get(task_id=task.pk, user_id=owner.pk).started_at == old_start
-        assert Session.objects.get(task_id=task.pk, user_id=member.pk).started_at >= earliest_new_start
-        assert apps.get_model("design_workflow", "TimeEntry").objects.get(pk=entry.pk).minutes == 50
+        assert (
+            Session.objects.get(task_id=task.pk, user_id=owner.pk).started_at
+            == old_start
+        )
+        assert (
+            Session.objects.get(task_id=task.pk, user_id=member.pk).started_at
+            >= earliest_new_start
+        )
+        assert (
+            apps.get_model("design_workflow", "TimeEntry")
+            .objects.get(pk=entry.pk)
+            .minutes
+            == 50
+        )
     finally:
         MigrationExecutor(connection).migrate(latest)

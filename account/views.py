@@ -1,11 +1,10 @@
-from datetime import timedelta, datetime, timezone as dt_timezone
-
-from django.utils import timezone as dj_timezone
 import hmac
 import logging
-from os import remove
 import secrets
-from string import digits, ascii_letters
+from contextlib import suppress
+from datetime import UTC, datetime, timedelta
+from os import remove
+from string import ascii_letters, digits
 from sys import platform
 
 from celery import current_app
@@ -14,12 +13,13 @@ from dj_rest_auth.views import LogoutView as Dj_rest_logout
 from django.conf import settings
 from django.core.exceptions import (
     SuspiciousFileOperation,
-    ValidationError as DjangoValidationError,
 )
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email
 from django.db import transaction
 from django.http import Http404
 from django.template.loader import render_to_string
+from django.utils import timezone as dj_timezone
 from django.utils.translation import gettext_lazy as _
 from rest_framework import permissions, status
 from rest_framework.exceptions import ValidationError
@@ -28,18 +28,19 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from design_workflow_backend.utils import CustomPagination
+
 from .filters import UsersFilter
 from .models import CustomUser
 from .serializers import (
-    PasswordResetSerializer,
     ChangePasswordSerializer,
-    UserEmailSerializer,
     CreateAccountSerializer,
+    PasswordResetSerializer,
     ProfileGETSerializer,
     ProfilePutSerializer,
-    UsersListSerializer,
     UserDetailSerializer,
+    UserEmailSerializer,
     UserPatchSerializer,
+    UsersListSerializer,
 )
 from .tasks import (
     send_email,
@@ -64,10 +65,10 @@ class CheckEmailView(APIView):
 
         try:
             validate_email(email)
-        except DjangoValidationError:
+        except DjangoValidationError as exc:
             raise ValidationError(
                 {"email": [_("Entrez une adresse électronique valide.")]}
-            )
+            ) from exc
 
         try:
             CustomUser.objects.get(email=email)
@@ -81,7 +82,7 @@ class LoginView(Dj_rest_login):
     throttle_scope = "login"
 
     def login(self):
-        return super(LoginView, self).login()
+        return super().login()
 
     def get_response(self):
         response = super().get_response()
@@ -101,7 +102,7 @@ class LogoutView(Dj_rest_logout):
     permission_classes = (permissions.IsAuthenticated,)
 
     def logout(self, request):
-        return super(LogoutView, self).logout(request)
+        return super().logout(request)
 
 
 class TokenRefreshView(APIView):
@@ -117,9 +118,7 @@ class TokenRefreshView(APIView):
 
     def post(self, request, *args, **kwargs):
         from dj_rest_auth.jwt_auth import CookieTokenRefreshSerializer, set_jwt_cookies
-        from rest_framework_simplejwt.settings import (
-            api_settings as jwt_settings,
-        )
+        from rest_framework_simplejwt.settings import api_settings as jwt_settings
 
         serializer = CookieTokenRefreshSerializer(
             data=request.data, context={"request": request}
@@ -153,9 +152,9 @@ class PasswordChangeView(APIView):
     def put(request, *args, **kwargs):
         serializer = ChangePasswordSerializer(data=request.data)
         if serializer.is_valid():
-            old_password = serializer.data.get("old_password")
-            new_password = serializer.data.get("new_password")
-            new_password2 = serializer.data.get("new_password2")
+            old_password = serializer.validated_data["old_password"]
+            new_password = serializer.validated_data["new_password"]
+            new_password2 = serializer.validated_data["new_password2"]
             user = request.user
             if not user.check_password(old_password):
                 errors = {"old_password": [_("Votre mot de passe est invalide.")]}
@@ -172,7 +171,7 @@ class PasswordChangeView(APIView):
                     ]
                 }
                 raise ValidationError(errors)
-            user.set_password(serializer.data.get("new_password"))
+            user.set_password(new_password)
             user.default_password_set = False
             user.save()
             return Response(status=status.HTTP_204_NO_CONTENT)
@@ -192,10 +191,10 @@ class PasswordResetView(APIView):
 
         try:
             validate_email(email)
-        except DjangoValidationError:
+        except DjangoValidationError as exc:
             raise ValidationError(
                 {"email": [_("Entrez une adresse électronique valide.")]}
-            )
+            ) from exc
 
         code = kwargs.get("code")
 
@@ -209,8 +208,7 @@ class PasswordResetView(APIView):
             ):
                 if user.password_reset_code_created_at:
                     time_elapsed = (
-                        datetime.now(dt_timezone.utc)
-                        - user.password_reset_code_created_at
+                        datetime.now(UTC) - user.password_reset_code_created_at
                     )
                     if time_elapsed > timedelta(minutes=5):
                         raise ValidationError(
@@ -224,8 +222,8 @@ class PasswordResetView(APIView):
                         )
                 return Response(status=status.HTTP_204_NO_CONTENT)
             raise ValidationError(self.errors)
-        except CustomUser.DoesNotExist:
-            raise ValidationError(self.errors)
+        except CustomUser.DoesNotExist as exc:
+            raise ValidationError(self.errors) from exc
 
     def put(self, request, *args, **kwargs):
         raw_email = request.data.get("email")
@@ -234,8 +232,10 @@ class PasswordResetView(APIView):
         email = raw_email.strip().lower()
         try:
             validate_email(email)
-        except DjangoValidationError:
-            raise ValidationError({"email": [_("Enter a valid email address.")]})
+        except DjangoValidationError as exc:
+            raise ValidationError(
+                {"email": [_("Enter a valid email address.")]}
+            ) from exc
         code = request.data.get("code")
         try:
             user = CustomUser.objects.get(email=email)
@@ -248,8 +248,7 @@ class PasswordResetView(APIView):
             ):
                 if user.password_reset_code_created_at:
                     time_elapsed = (
-                        datetime.now(dt_timezone.utc)
-                        - user.password_reset_code_created_at
+                        datetime.now(UTC) - user.password_reset_code_created_at
                     )
                     if time_elapsed > timedelta(minutes=5):
                         raise ValidationError(
@@ -303,8 +302,8 @@ class PasswordResetView(APIView):
                 raise ValidationError(serializer.errors)
 
             raise ValidationError(self.errors)
-        except CustomUser.DoesNotExist:
-            raise ValidationError(self.errors)
+        except CustomUser.DoesNotExist as exc:
+            raise ValidationError(self.errors) from exc
 
 
 class SendPasswordResetView(APIView):
@@ -326,10 +325,10 @@ class SendPasswordResetView(APIView):
 
         try:
             validate_email(email)
-        except DjangoValidationError:
+        except DjangoValidationError as exc:
             raise ValidationError(
                 {"email": [_("Entrez une adresse électronique valide.")]}
-            )
+            ) from exc
 
         try:
             user = CustomUser.objects.get(email=email)
@@ -381,7 +380,7 @@ class SendPasswordResetView(APIView):
                                 "password_reset_code",
                             ),
                         )
-                        date_now = datetime.now(dt_timezone.utc)
+                        date_now = datetime.now(UTC)
                         user.password_reset_code_created_at = date_now
                         shift = date_now + timedelta(hours=24)
                         task_id_password_reset = (
@@ -424,8 +423,8 @@ class ProfileView(APIView):
                 "can_delete": user.can_delete,
             }
             return Response(user_data, status=status.HTTP_200_OK)
-        except CustomUser.DoesNotExist:
-            raise ValidationError(self.errors)
+        except CustomUser.DoesNotExist as exc:
+            raise ValidationError(self.errors) from exc
 
     @staticmethod
     def patch(request, *args, **kwargs):
@@ -535,8 +534,8 @@ class UserDetailEditDeleteView(APIView):
     def get_object(pk):
         try:
             user = CustomUser.objects.get(pk=pk)
-        except CustomUser.DoesNotExist:
-            raise Http404(_("Aucune utilisateur ne correspond à la requête."))
+        except CustomUser.DoesNotExist as exc:
+            raise Http404(_("Aucune utilisateur ne correspond à la requête.")) from exc
         return user
 
     def get(self, request, *args, **kwargs):
@@ -573,10 +572,8 @@ class UserDetailEditDeleteView(APIView):
         if user.avatar_cropped:
             media_paths_list.append(user.avatar_cropped.path)
         for media_path in media_paths_list:
-            try:
+            with suppress(ValueError, SuspiciousFileOperation, FileNotFoundError):
                 remove(media_path)
-            except (ValueError, SuspiciousFileOperation, FileNotFoundError):
-                pass
         user.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -594,10 +591,10 @@ class BulkDeleteUsersView(APIView):
 
         try:
             ids = [int(i) for i in ids]
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as exc:
             raise ValidationError(
                 {"ids": _("Les identifiants doivent être des entiers.")}
-            )
+            ) from exc
 
         if request.user.pk in ids:
             raise ValidationError(
@@ -616,10 +613,10 @@ class BulkDeleteUsersView(APIView):
                 if user.avatar_cropped:
                     media_paths_list.append(user.avatar_cropped.path)
                 for media_path in media_paths_list:
-                    try:
+                    with suppress(
+                        ValueError, SuspiciousFileOperation, FileNotFoundError
+                    ):
                         remove(media_path)
-                    except (ValueError, SuspiciousFileOperation, FileNotFoundError):
-                        pass
             CustomUser.objects.filter(pk__in=ids).delete()
 
         return Response(status=status.HTTP_204_NO_CONTENT)

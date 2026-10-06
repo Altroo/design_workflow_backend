@@ -19,14 +19,20 @@ def _daily_worked_minutes(started_at, ended_at):
     work_date = local_start.date()
     while work_date <= local_end.date():
         day_start = datetime.combine(work_date, time.min, tzinfo=local_start.tzinfo)
-        day_end = datetime.combine(work_date + timedelta(days=1), time.min, tzinfo=local_start.tzinfo)
-        minutes = count_working_minutes(max(local_start, day_start), min(local_end, day_end))
+        day_end = datetime.combine(
+            work_date + timedelta(days=1), time.min, tzinfo=local_start.tzinfo
+        )
+        minutes = count_working_minutes(
+            max(local_start, day_start), min(local_end, day_end)
+        )
         if minutes:
             yield work_date, minutes
         work_date += timedelta(days=1)
 
 
-def active_session_minutes(*, task_ids=None, user_id=None, start_date=None, end_date=None, now=None):
+def active_session_minutes(
+    *, task_ids=None, user_id=None, start_date=None, end_date=None, now=None
+):
     """Return non-persisted person-minutes keyed by (task, user, work date).
 
     One time snapshot keeps a response internally consistent. Callers combine
@@ -39,18 +45,35 @@ def active_session_minutes(*, task_ids=None, user_id=None, start_date=None, end_
     if isinstance(end_date, str):
         end_date = date.fromisoformat(end_date)
     local_now = timezone.localtime(now)
-    start_bound = datetime.combine(start_date, time.min, tzinfo=local_now.tzinfo) if start_date else None
-    end_bound = min(local_now, datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=local_now.tzinfo)) if end_date else local_now
+    start_bound = (
+        datetime.combine(start_date, time.min, tzinfo=local_now.tzinfo)
+        if start_date
+        else None
+    )
+    end_bound = (
+        min(
+            local_now,
+            datetime.combine(
+                end_date + timedelta(days=1), time.min, tzinfo=local_now.tzinfo
+            ),
+        )
+        if end_date
+        else local_now
+    )
     sessions = TaskWorkSession.objects.filter(
-        task__status=TaskStatus.IN_PROGRESS, task__archived=False,
-        task__project__archived=False, user__is_active=True,
+        task__status=TaskStatus.IN_PROGRESS,
+        task__archived=False,
+        task__project__archived=False,
+        user__is_active=True,
     )
     if task_ids is not None:
         sessions = sessions.filter(task_id__in=task_ids)
     if user_id is not None:
         sessions = sessions.filter(user_id=user_id)
     minutes = {}
-    for task_id, worker_id, started_at in sessions.values_list("task_id", "user_id", "started_at"):
+    for task_id, worker_id, started_at in sessions.values_list(
+        "task_id", "user_id", "started_at"
+    ):
         started_at = max(started_at, start_bound) if start_bound else started_at
         for work_date, amount in _daily_worked_minutes(started_at, end_bound):
             key = (task_id, worker_id, work_date)
@@ -71,18 +94,34 @@ def reconcile_task_work_sessions(task, *, event="workflow", now=None):
     now = now or timezone.now()
     entries = []
     with transaction.atomic():
-        current = Task.objects.select_for_update(of=("self",)).select_related("project").get(pk=task.pk)
+        current = (
+            Task.objects.select_for_update(of=("self",))
+            .select_related("project")
+            .get(pk=task.pk)
+        )
         participant_ids = set()
-        if current.status == TaskStatus.IN_PROGRESS and not current.archived and not current.project.archived:
+        if (
+            current.status == TaskStatus.IN_PROGRESS
+            and not current.archived
+            and not current.project.archived
+        ):
             candidate_ids = {current.project.manager_id, current.current_assignee_id}
-            candidate_ids.update(current.project.collaborators.values_list("pk", flat=True))
+            candidate_ids.update(
+                current.project.collaborators.values_list("pk", flat=True)
+            )
             participant_ids = set(
-                get_user_model().objects.filter(pk__in=candidate_ids, is_active=True).values_list("pk", flat=True)
+                get_user_model()
+                .objects.filter(pk__in=candidate_ids, is_active=True)
+                .values_list("pk", flat=True)
             )
 
         sessions = list(current.work_sessions.select_related("user"))
-        continuing = [session for session in sessions if session.user_id in participant_ids]
-        closed = [session for session in sessions if session.user_id not in participant_ids]
+        continuing = [
+            session for session in sessions if session.user_id in participant_ids
+        ]
+        closed = [
+            session for session in sessions if session.user_id not in participant_ids
+        ]
         for session in closed:
             for work_date, minutes in _daily_worked_minutes(session.started_at, now):
                 entry = TimeEntry.objects.create(
@@ -93,21 +132,32 @@ def reconcile_task_work_sessions(task, *, event="workflow", now=None):
                     note="Automatic shared workflow entry based on scheduled studio hours.",
                 )
                 entries.append(entry)
-                record_task_activity(current, session.user, TaskActivityType.TIME_LOGGED, {
-                    "time_entry_id": entry.pk,
-                    "minutes": minutes,
-                    "event": event,
-                    "work_session_id": session.pk,
-                })
+                record_task_activity(
+                    current,
+                    session.user,
+                    TaskActivityType.TIME_LOGGED,
+                    {
+                        "time_entry_id": entry.pk,
+                        "minutes": minutes,
+                        "event": event,
+                        "work_session_id": session.pk,
+                    },
+                )
         if closed:
-            TaskWorkSession.objects.filter(pk__in=[session.pk for session in closed]).delete()
+            TaskWorkSession.objects.filter(
+                pk__in=[session.pk for session in closed]
+            ).delete()
 
         new_ids = participant_ids - {session.user_id for session in continuing}
-        created = TaskWorkSession.objects.bulk_create([
-            TaskWorkSession(task=current, user_id=user_id, started_at=now)
-            for user_id in sorted(new_ids)
-        ])
-        work_started_at = min((session.started_at for session in [*continuing, *created]), default=None)
+        created = TaskWorkSession.objects.bulk_create(
+            [
+                TaskWorkSession(task=current, user_id=user_id, started_at=now)
+                for user_id in sorted(new_ids)
+            ]
+        )
+        work_started_at = min(
+            (session.started_at for session in [*continuing, *created]), default=None
+        )
         if current.work_started_at != work_started_at:
             Task.objects.filter(pk=current.pk).update(work_started_at=work_started_at)
             current.work_started_at = work_started_at

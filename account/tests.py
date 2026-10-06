@@ -1,13 +1,13 @@
 import os
 import shutil
-from datetime import datetime, timezone
+from contextlib import suppress
+from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
-from unittest.mock import patch, MagicMock
 
 import pytest
-from PIL import Image
 from django.conf import settings as app_settings
 from django.contrib.auth import get_user_model
 from django.core import mail
@@ -15,34 +15,36 @@ from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connection
 from django.urls import reverse
+from PIL import Image
 from rest_framework import serializers as drf_serializers
 from rest_framework import status
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
 from account.serializers import (
+    ChangePasswordSerializer,
     CreateAccountSerializer,
-    ProfilePutSerializer,
-    UsersListSerializer,
+    PasswordResetSerializer,
     ProfileGETSerializer,
+    ProfilePutSerializer,
     UserDetailSerializer,
     UserPatchSerializer,
-    ChangePasswordSerializer,
-    PasswordResetSerializer,
+    UsersListSerializer,
 )
+
 from .filters import UsersFilter
 from .models import CustomUser
 from .sso import SSOExchangeView
 from .tasks import (
-    send_email,
-    start_deleting_expired_codes,
-    generate_user_thumbnail,
-    resize_avatar,
-    random_color_picker,
-    get_text_fill_color,
     from_img_to_io,
     generate_avatar,
     generate_images_v2,
+    generate_user_thumbnail,
+    get_text_fill_color,
+    random_color_picker,
+    resize_avatar,
+    send_email,
+    start_deleting_expired_codes,
 )
 
 
@@ -55,10 +57,8 @@ def temp_media_root(settings):
     temp_dir.mkdir(parents=True, exist_ok=False)
     settings.MEDIA_ROOT = str(temp_dir)
     yield
-    try:
+    with suppress(OSError):
         shutil.rmtree(temp_dir)
-    except (PermissionError, OSError):
-        pass
 
 
 pytestmark = pytest.mark.django_db
@@ -113,6 +113,7 @@ class TestSSOExchangeView:
         assert user.role == CustomUser.UserRole.DESIGNER
         assert user.is_staff is False
 
+
 # A small but valid 10×10 PNG encoded as base64 data-URI.
 IMG_B64 = (
     "data:image/png;base64,"
@@ -141,8 +142,8 @@ def make_regular_user(email="regular@test.com", password="securepass123"):
     return user, client
 
 
-@pytest.fixture
-def user_extra():
+@pytest.fixture(name="user_extra")
+def user_extra_fixture():
     """Convenience fixture: a staff user with first/last/gender preset."""
     return CustomUser.objects.create_user(
         email="extra_test@example.com",
@@ -681,7 +682,7 @@ def test_view_schedules_and_revokes(
     _, kwargs = apply_async_mock.call_args
     eta = kwargs["eta"]
     assert isinstance(eta, datetime)
-    delta = (eta - datetime.now(timezone.utc)).total_seconds()
+    delta = (eta - datetime.now(UTC)).total_seconds()
     assert 86000 <= delta <= 86800
 
     user.refresh_from_db()
@@ -1019,14 +1020,14 @@ class TestSerializers:
         old_names = (user.avatar.name, user.avatar_cropped.name)
         deleted: list[str] = []
 
-        def fake_delete(self, field):
+        def fake_delete(_serializer, field):
             deleted.append(getattr(field, "name", str(field)))
 
         monkeypatch.setattr(
             ProfilePutSerializer, "_delete_file", fake_delete, raising=False
         )
 
-        def fake_process(field_name, _data):
+        def fake_process(_field_name, _data):
             uploaded = SimpleUploadedFile(
                 "new.png", b"\x89PNG\r\n", content_type="image/png"
             )
@@ -1038,7 +1039,7 @@ class TestSerializers:
             staticmethod(fake_process),
             raising=False,
         )
-        monkeypatch.setattr(type(user), "save", lambda self, *args, **kwargs: None)
+        monkeypatch.setattr(type(user), "save", lambda _user, *args, **kwargs: None)
 
         ser = ProfilePutSerializer(
             instance=user, data={"avatar": IMG_B64}, partial=True
@@ -1046,7 +1047,7 @@ class TestSerializers:
         try:
             ser.is_valid(raise_exception=True)
             ser.save()
-        except (TypeError, ValueError, AttributeError):
+        except TypeError, ValueError, AttributeError:
             pass
 
         if not connection.needs_rollback:
@@ -1060,19 +1061,25 @@ class TestSerializers:
 
     def test_profileput_update_clears_avatar_and_deletes_old_files(self, monkeypatch):
         user_obj = get_user_model()
-        user = user_obj.objects.create_user(email="clear-avatar@example.com", password="p")
+        user = user_obj.objects.create_user(
+            email="clear-avatar@example.com", password="p"
+        )
         user.avatar.name = "user_avatars/old-avatar.png"
         user.avatar_cropped.name = "user_avatars/old-cropped.png"
         user.save(update_fields=["avatar", "avatar_cropped"])
         old_names = {user.avatar.name, user.avatar_cropped.name}
         deleted: list[str] = []
 
-        def fake_delete(self, field):
+        def fake_delete(_serializer, field):
             deleted.append(getattr(field, "name", str(field)))
 
-        monkeypatch.setattr(ProfilePutSerializer, "_delete_file", fake_delete, raising=False)
+        monkeypatch.setattr(
+            ProfilePutSerializer, "_delete_file", fake_delete, raising=False
+        )
 
-        serializer = ProfilePutSerializer(instance=user, data={"avatar": None}, partial=True)
+        serializer = ProfilePutSerializer(
+            instance=user, data={"avatar": None}, partial=True
+        )
         assert serializer.is_valid(), serializer.errors
         updated = serializer.save()
 
@@ -1200,16 +1207,20 @@ class TestTasksExtra:
         assert isinstance(avatar, Image.Image) and avatar.size == (600, 600)
 
     def test_resize_avatar_with_none(self, user_extra):
-        with patch("account.tasks.CustomUser.objects.get", return_value=user_extra):
-            with patch("account.tasks.resize_images_v2") as mock_resize:
-                resize_avatar(object_pk=user_extra.pk, avatar=None)
-                mock_resize.assert_not_called()
+        with (
+            patch("account.tasks.CustomUser.objects.get", return_value=user_extra),
+            patch("account.tasks.resize_images_v2") as mock_resize,
+        ):
+            resize_avatar(object_pk=user_extra.pk, avatar=None)
+            mock_resize.assert_not_called()
 
     def test_resize_avatar_with_non_bytesio(self, user_extra):
-        with patch("account.tasks.CustomUser.objects.get", return_value=user_extra):
-            with patch("account.tasks.resize_images_v2") as mock_resize:
-                resize_avatar(object_pk=user_extra.pk, avatar="string")
-                mock_resize.assert_not_called()
+        with (
+            patch("account.tasks.CustomUser.objects.get", return_value=user_extra),
+            patch("account.tasks.resize_images_v2") as mock_resize,
+        ):
+            resize_avatar(object_pk=user_extra.pk, avatar="string")
+            mock_resize.assert_not_called()
 
 
 @pytest.mark.django_db
@@ -1220,7 +1231,7 @@ class TestCreateAccountSerializerExtra:
             name = "broken.jpg"
 
             def read(self):
-                raise IOError("Read failed")
+                raise OSError("Read failed")
 
             def seek(self, pos):
                 pass
@@ -1345,7 +1356,7 @@ class TestProfilePutSerializerExtra:
             name = "broken.jpg"
 
             def read(self):
-                raise IOError("Read failed")
+                raise OSError("Read failed")
 
             def seek(self, pos):
                 pass
@@ -1924,9 +1935,10 @@ class TestAccountAdditionalCoverage:
         self.user.password_reset_code = "1234"
         self.user.task_id_password_reset = "task-win"
         self.user.save()
-        with patch("account.views.platform", "win32"), patch(
-            "account.views.current_app"
-        ) as mock_celery:
+        with (
+            patch("account.views.platform", "win32"),
+            patch("account.views.current_app") as mock_celery,
+        ):
             resp = self.client.put(
                 reverse("account:password_reset"),
                 {
@@ -1944,9 +1956,10 @@ class TestAccountAdditionalCoverage:
         u2.task_id_password_reset = "task-unix"
         u2.password_reset_code = "5678"
         u2.save()
-        with patch("account.views.platform", "linux"), patch(
-            "account.views.current_app"
-        ) as mock_celery:
+        with (
+            patch("account.views.platform", "linux"),
+            patch("account.views.current_app") as mock_celery,
+        ):
             resp = self.client.put(
                 reverse("account:password_reset"),
                 {
@@ -1977,11 +1990,12 @@ class TestAccountAdditionalCoverage:
         u2 = self.User.objects.create_user(email="send_unix@test.com", password="p")
         u2.task_id_password_reset = "send-unix-task"
         u2.save()
-        with patch("account.views.platform", "linux"), patch(
-            "account.views.current_app"
-        ) as mock_celery, patch("account.views.send_email") as mock_se, patch(
-            "account.views.start_deleting_expired_codes"
-        ) as mock_sd:
+        with (
+            patch("account.views.platform", "linux"),
+            patch("account.views.current_app") as mock_celery,
+            patch("account.views.send_email") as mock_se,
+            patch("account.views.start_deleting_expired_codes") as mock_sd,
+        ):
             mock_se.apply_async = MagicMock()
             mock_sd.apply_async = MagicMock(return_value=MagicMock(id="new-task-id"))
             resp = self.client.post(
@@ -2048,7 +2062,7 @@ class TestBulkDeleteUsersAPI:
         )
 
     def test_bulk_delete_non_admin_403(self):
-        regular, client = make_regular_user(email="regbd@example.com")
+        _, client = make_regular_user(email="regbd@example.com")
         url = reverse("account:users-bulk-delete")
         assert (
             client.delete(url, {"ids": [self.u1.id]}, format="json").status_code == 403

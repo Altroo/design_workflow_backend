@@ -1,20 +1,20 @@
 from django.urls import path
 from rest_framework_simplejwt.views import TokenVerifyView
 
+from .sso import SSOCredentialCheckView, SSOExchangeView
 from .views import (
+    BulkDeleteUsersView,
+    CheckEmailView,
     LoginView,
     LogoutView,
-    TokenRefreshView,
-    PasswordResetView,
     PasswordChangeView,
-    SendPasswordResetView,
-    CheckEmailView,
+    PasswordResetView,
     ProfileView,
-    UsersListCreateView,
+    SendPasswordResetView,
+    TokenRefreshView,
     UserDetailEditDeleteView,
-    BulkDeleteUsersView,
+    UsersListCreateView,
 )
-from .sso import SSOCredentialCheckView, SSOExchangeView
 
 app_name = "account"
 

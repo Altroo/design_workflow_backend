@@ -14,22 +14,25 @@ from .models import Project, Task
 from .serializers import ProjectWriteSerializer, TaskWriteSerializer
 from .tests import make_designer
 
-
 pytestmark = [
     pytest.mark.django_db(transaction=True),
-    pytest.mark.skipif(connection.vendor != "postgresql", reason="Requires real PostgreSQL row locks"),
+    pytest.mark.skipif(
+        connection.vendor != "postgresql", reason="Requires real PostgreSQL row locks"
+    ),
 ]
 
 
-@pytest.fixture
-def shared_projects():
+@pytest.fixture(name="shared_projects")
+def shared_projects_fixture():
     owner = make_designer("pg-owner@example.test")
     collaborator = make_designer("pg-collaborator@example.test")
     source = Project.objects.create(name="Source", manager=owner)
     destination = Project.objects.create(name="Destination", manager=owner)
     source.collaborators.add(collaborator)
     destination.collaborators.add(collaborator)
-    task = Task.objects.create(project=source, title="Original", created_by=owner, updated_by=owner)
+    task = Task.objects.create(
+        project=source, title="Original", created_by=owner, updated_by=owner
+    )
     return owner, collaborator, source, destination, task
 
 
@@ -37,7 +40,9 @@ def _request(user, method, path, payload, application_name):
     close_old_connections()
     try:
         with connection.cursor() as cursor:
-            cursor.execute("SELECT set_config('application_name', %s, false)", [application_name])
+            cursor.execute(
+                "SELECT set_config('application_name', %s, false)", [application_name]
+            )
             cursor.execute("SET lock_timeout = '5s'")
             cursor.execute("SET statement_timeout = '15s'")
         client = APIClient()
@@ -63,7 +68,9 @@ def _wait_for_database_lock(application_name):
 
 @pytest.mark.parametrize("create", [True, False])
 @pytest.mark.parametrize("incoming_first", [True, False])
-def test_archive_serializes_with_incoming_create_and_move(shared_projects, create, incoming_first):
+def test_archive_serializes_with_incoming_create_and_move(
+    shared_projects, create, incoming_first
+):
     owner, collaborator, source, destination, task = shared_projects
     acquired = Event()
     release = Event()
@@ -81,14 +88,33 @@ def test_archive_serializes_with_incoming_create_and_move(shared_projects, creat
     incoming_name = f"dw-qa-incoming-{uuid4().hex}"
     archive_name = f"dw-qa-archive-{uuid4().hex}"
     incoming_args = (
-        collaborator, "post" if create else "patch",
-        "/api/design-workflow/tasks/" if create else f"/api/design-workflow/tasks/{task.pk}/",
-        {"project_id": destination.pk, "title": "Incoming"}, incoming_name,
+        collaborator,
+        "post" if create else "patch",
+        (
+            "/api/design-workflow/tasks/"
+            if create
+            else f"/api/design-workflow/tasks/{task.pk}/"
+        ),
+        {"project_id": destination.pk, "title": "Incoming"},
+        incoming_name,
     )
-    archive_args = (owner, "patch", f"/api/design-workflow/projects/{destination.pk}/", {"archived": True}, archive_name)
-    first_args, second_args = (incoming_args, archive_args) if incoming_first else (archive_args, incoming_args)
+    archive_args = (
+        owner,
+        "patch",
+        f"/api/design-workflow/projects/{destination.pk}/",
+        {"archived": True},
+        archive_name,
+    )
+    first_args, second_args = (
+        (incoming_args, archive_args)
+        if incoming_first
+        else (archive_args, incoming_args)
+    )
 
-    with patch.object(held_serializer, held_method, hold_after_row_lock), ThreadPoolExecutor(max_workers=2) as pool:
+    with (
+        patch.object(held_serializer, held_method, hold_after_row_lock),
+        ThreadPoolExecutor(max_workers=2) as pool,
+    ):
         first = pool.submit(_request, *first_args)
         try:
             assert acquired.wait(5), "First request did not reach its locked write"
@@ -96,9 +122,15 @@ def test_archive_serializes_with_incoming_create_and_move(shared_projects, creat
             _wait_for_database_lock(second_args[-1])
         finally:
             release.set()
-        first_response, second_response = first.result(timeout=10), second.result(timeout=10)
+        first_response, second_response = first.result(timeout=10), second.result(
+            timeout=10
+        )
 
-    incoming, archive = (first_response, second_response) if incoming_first else (second_response, first_response)
+    incoming, archive = (
+        (first_response, second_response)
+        if incoming_first
+        else (second_response, first_response)
+    )
     assert archive.status_code == 200
     destination.refresh_from_db()
     assert destination.archived
@@ -115,10 +147,14 @@ def test_archive_serializes_with_incoming_create_and_move(shared_projects, creat
 
 
 @pytest.mark.parametrize("resource,field", [("tasks", "title"), ("projects", "name")])
-def test_simultaneous_same_field_edits_are_serialized_then_conflict(shared_projects, resource, field):
+def test_simultaneous_same_field_edits_are_serialized_then_conflict(
+    shared_projects, resource, field
+):
     owner, collaborator, source, _, task = shared_projects
     instance = task if resource == "tasks" else source
-    serializer_class = TaskWriteSerializer if resource == "tasks" else ProjectWriteSerializer
+    serializer_class = (
+        TaskWriteSerializer if resource == "tasks" else ProjectWriteSerializer
+    )
     acquired = Event()
     release = Event()
     original = serializer_class.update
@@ -133,11 +169,28 @@ def test_simultaneous_same_field_edits_are_serialized_then_conflict(shared_proje
     second_name = f"dw-qa-conflict-{uuid4().hex}"
     # Project editing belongs to the owner; card editing also permits the peer.
     second_user = collaborator if resource == "tasks" else owner
-    with patch.object(serializer_class, "update", hold_first_save), ThreadPoolExecutor(max_workers=2) as pool:
-        first = pool.submit(_request, owner, "patch", path, {field: "First edit", "expected_values": baseline}, f"dw-qa-first-{uuid4().hex}")
+    with (
+        patch.object(serializer_class, "update", hold_first_save),
+        ThreadPoolExecutor(max_workers=2) as pool,
+    ):
+        first = pool.submit(
+            _request,
+            owner,
+            "patch",
+            path,
+            {field: "First edit", "expected_values": baseline},
+            f"dw-qa-first-{uuid4().hex}",
+        )
         try:
             assert acquired.wait(5)
-            second = pool.submit(_request, second_user, "patch", path, {field: "Second edit", "expected_values": baseline}, second_name)
+            second = pool.submit(
+                _request,
+                second_user,
+                "patch",
+                path,
+                {field: "Second edit", "expected_values": baseline},
+                second_name,
+            )
             _wait_for_database_lock(second_name)
         finally:
             release.set()
@@ -152,7 +205,12 @@ def test_malformed_list_baselines_are_controlled_on_postgres(shared_projects, ba
     owner, _, source, _, _ = shared_projects
     client = APIClient()
     client.force_authenticate(owner)
-    response = client.patch(f"/api/design-workflow/projects/{source.pk}/", {
-        "collaborator_ids": [], "expected_values": {"collaborator_ids": baseline},
-    }, format="json")
+    response = client.patch(
+        f"/api/design-workflow/projects/{source.pk}/",
+        {
+            "collaborator_ids": [],
+            "expected_values": {"collaborator_ids": baseline},
+        },
+        format="json",
+    )
     assert response.status_code == 409

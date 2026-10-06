@@ -11,8 +11,14 @@ from simple_history.admin import SimpleHistoryAdmin
 
 from .admin_realtime import WorkflowRealtimeAdmin
 from .models import (
-    ChatThread, ChatThreadKind, Project, ProjectStatus, Task, TaskLabel,
-    TaskStatus, TimeEntry,
+    ChatThread,
+    ChatThreadKind,
+    Project,
+    ProjectStatus,
+    Task,
+    TaskLabel,
+    TaskStatus,
+    TimeEntry,
 )
 from .tests import make_designer, make_manager
 from .time_tracking import reconcile_task_work_sessions
@@ -24,19 +30,30 @@ def at(hour, minute=0):
     return timezone.make_aware(datetime(2026, 9, 14, hour, minute))
 
 
-@pytest.fixture
-def studio():
+@pytest.fixture(name="studio")
+def studio_fixture():
     owner = make_designer("admin-owner@example.test")
     member = make_designer("admin-member@example.test")
     manager = make_manager("admin-supervisor@example.test")
     project = Project.objects.create(name="Admin project", manager=owner)
     task = Task.objects.create(
-        title="Admin card", project=project, current_assignee=owner,
-        created_by=owner, updated_by=owner, status=TaskStatus.IN_PROGRESS,
+        title="Admin card",
+        project=project,
+        current_assignee=owner,
+        created_by=owner,
+        updated_by=owner,
+        status=TaskStatus.IN_PROGRESS,
     )
     request = RequestFactory().post("/admin/design_workflow/")
     request.user = manager
-    return SimpleNamespace(owner=owner, member=member, manager=manager, project=project, task=task, request=request)
+    return SimpleNamespace(
+        owner=owner,
+        member=member,
+        manager=manager,
+        project=project,
+        task=task,
+        request=request,
+    )
 
 
 def save_admin(studio, obj, *, change=True, save_m2m=lambda: None):
@@ -48,7 +65,9 @@ def save_admin(studio, obj, *, change=True, save_m2m=lambda: None):
     return form
 
 
-def test_writable_admins_have_live_hooks_and_history_registrations_stay_readonly(studio):
+def test_writable_admins_have_live_hooks_and_history_registrations_stay_readonly(
+    studio,
+):
     writable = []
     history = []
     for model, model_admin in admin.site._registry.items():
@@ -65,27 +84,37 @@ def test_writable_admins_have_live_hooks_and_history_registrations_stay_readonly
     assert len(writable) == len(history) == 20
 
 
-def test_admin_save_broadcasts_only_after_m2m_and_commit(studio, django_capture_on_commit_callbacks):
+def test_admin_save_broadcasts_only_after_m2m_and_commit(
+    studio, django_capture_on_commit_callbacks
+):
     label = TaskLabel(name="Private label title", created_by=studio.owner)
     model_admin = admin.site._registry[TaskLabel]
     form = SimpleNamespace(instance=label, save_m2m=lambda: None)
     with patch("design_workflow.admin_realtime.broadcast_workflow_event") as broadcast:
-        with django_capture_on_commit_callbacks(execute=True):
-            with transaction.atomic():
-                model_admin.save_model(studio.request, label, form, False)
-                broadcast.assert_not_called()
-                model_admin.save_related(studio.request, form, [], False)
-                broadcast.assert_not_called()
+        with django_capture_on_commit_callbacks(execute=True), transaction.atomic():
+            model_admin.save_model(studio.request, label, form, False)
+            broadcast.assert_not_called()
+            model_admin.save_related(studio.request, form, [], False)
+            broadcast.assert_not_called()
         broadcast.assert_called_once_with("admin")
 
 
-def test_admin_rollback_discards_changes_and_event(studio, django_capture_on_commit_callbacks):
+def test_admin_rollback_discards_changes_and_event(
+    studio, django_capture_on_commit_callbacks
+):
     with patch("design_workflow.admin_realtime.broadcast_workflow_event") as broadcast:
-        with django_capture_on_commit_callbacks(execute=True):
-            with pytest.raises(ValueError), transaction.atomic():
-                studio.project.name = "Rolled back"
-                save_admin(studio, studio.project, save_m2m=lambda: studio.project.collaborators.add(studio.member))
-                raise ValueError("rollback")
+        with (
+            django_capture_on_commit_callbacks(execute=True),
+            pytest.raises(ValueError),
+            transaction.atomic(),
+        ):
+            studio.project.name = "Rolled back"
+            save_admin(
+                studio,
+                studio.project,
+                save_m2m=lambda: studio.project.collaborators.add(studio.member),
+            )
+            raise ValueError("rollback")
         broadcast.assert_not_called()
     studio.project.refresh_from_db()
     assert studio.project.name == "Admin project"
@@ -95,25 +124,37 @@ def test_admin_rollback_discards_changes_and_event(studio, django_capture_on_com
 
 def test_admin_m2m_membership_reconciles_person_timers_and_chat(studio, monkeypatch):
     reconcile_task_work_sessions(studio.task, now=at(9))
-    thread = ChatThread.objects.create(kind=ChatThreadKind.PROJECT, project=studio.project)
+    thread = ChatThread.objects.create(
+        kind=ChatThreadKind.PROJECT, project=studio.project
+    )
     thread.participants.add(studio.owner)
     clock = [at(10)]
     monkeypatch.setattr("design_workflow.time_tracking.timezone.now", lambda: clock[0])
 
-    save_admin(studio, studio.project, save_m2m=lambda: studio.project.collaborators.add(studio.member))
+    save_admin(
+        studio,
+        studio.project,
+        save_m2m=lambda: studio.project.collaborators.add(studio.member),
+    )
     assert studio.task.work_sessions.get(user=studio.owner).started_at == at(9)
     assert studio.task.work_sessions.get(user=studio.member).started_at == at(10)
     assert thread.participants.filter(pk=studio.member.pk).exists()
     assert not studio.task.work_sessions.filter(user=studio.manager).exists()
 
     clock[0] = at(10, 30)
-    save_admin(studio, studio.project, save_m2m=lambda: studio.project.collaborators.remove(studio.member))
+    save_admin(
+        studio,
+        studio.project,
+        save_m2m=lambda: studio.project.collaborators.remove(studio.member),
+    )
     assert not studio.task.work_sessions.filter(user=studio.member).exists()
     assert studio.task.time_entries.get(user=studio.member).minutes == 30
     assert not thread.participants.filter(pk=studio.member.pk).exists()
 
 
-def test_admin_project_archive_stops_timers_and_restore_keeps_cards_archived(studio, monkeypatch):
+def test_admin_project_archive_stops_timers_and_restore_keeps_cards_archived(
+    studio, monkeypatch
+):
     studio.project.collaborators.add(studio.member)
     reconcile_task_work_sessions(studio.task, now=at(9))
     monkeypatch.setattr("design_workflow.time_tracking.timezone.now", lambda: at(10))
@@ -135,7 +176,9 @@ def test_admin_project_archive_stops_timers_and_restore_keeps_cards_archived(stu
     assert not studio.task.work_sessions.exists()
 
 
-def test_admin_task_assignment_and_status_keep_shared_time_consistent(studio, monkeypatch):
+def test_admin_task_assignment_and_status_keep_shared_time_consistent(
+    studio, monkeypatch
+):
     reconcile_task_work_sessions(studio.task, now=at(9))
     clock = [at(10)]
     monkeypatch.setattr("design_workflow.time_tracking.timezone.now", lambda: clock[0])
@@ -165,7 +208,12 @@ def test_admin_cannot_restore_task_inside_archived_project(studio, monkeypatch):
 
 
 def test_admin_time_entry_move_recalculates_both_tasks(studio):
-    destination = Task.objects.create(title="Destination", project=studio.project, created_by=studio.owner, updated_by=studio.owner)
+    destination = Task.objects.create(
+        title="Destination",
+        project=studio.project,
+        created_by=studio.owner,
+        updated_by=studio.owner,
+    )
     entry = TimeEntry.objects.create(task=studio.task, user=studio.owner, minutes=60)
     entry.task = destination
     entry.minutes = 90
@@ -177,17 +225,27 @@ def test_admin_time_entry_move_recalculates_both_tasks(studio):
 
 
 @pytest.mark.parametrize("bulk", [False, True])
-def test_admin_time_entry_deletion_recalculates_totals_and_waits_for_commit(studio, bulk, django_capture_on_commit_callbacks):
+def test_admin_time_entry_deletion_recalculates_totals_and_waits_for_commit(
+    studio, bulk, django_capture_on_commit_callbacks
+):
     entry = TimeEntry.objects.create(task=studio.task, user=studio.owner, minutes=60)
     other_task = None
     if bulk:
-        other_task = Task.objects.create(title="Other timed card", project=studio.project, created_by=studio.owner, updated_by=studio.owner)
+        other_task = Task.objects.create(
+            title="Other timed card",
+            project=studio.project,
+            created_by=studio.owner,
+            updated_by=studio.owner,
+        )
         TimeEntry.objects.create(task=other_task, user=studio.owner, minutes=30)
     model_admin = admin.site._registry[TimeEntry]
     with patch("design_workflow.admin_realtime.broadcast_workflow_event") as broadcast:
         with django_capture_on_commit_callbacks(execute=True):
             if bulk:
-                model_admin.delete_queryset(studio.request, TimeEntry.objects.filter(task__project=studio.project))
+                model_admin.delete_queryset(
+                    studio.request,
+                    TimeEntry.objects.filter(task__project=studio.project),
+                )
             else:
                 model_admin.delete_model(studio.request, entry)
             broadcast.assert_not_called()
@@ -202,7 +260,9 @@ def test_admin_time_entry_deletion_recalculates_totals_and_waits_for_commit(stud
 
 
 @pytest.mark.parametrize("rollback", [False, True])
-def test_history_revert_path_reconciles_after_m2m_and_is_atomic(studio, monkeypatch, rollback, django_capture_on_commit_callbacks):
+def test_history_revert_path_reconciles_after_m2m_and_is_atomic(
+    studio, monkeypatch, rollback, django_capture_on_commit_callbacks
+):
     model_admin = admin.site._registry[Task]
     TimeEntry.objects.create(task=studio.task, user=studio.owner, minutes=45)
     reconcile_task_work_sessions(studio.task, now=at(9))
@@ -221,19 +281,28 @@ def test_history_revert_path_reconciles_after_m2m_and_is_atomic(studio, monkeypa
             raise ValueError("rollback history revert")
         return "reverted"
 
-    with patch.object(SimpleHistoryAdmin, "history_form_view", library_revert):
-        with patch("design_workflow.admin_realtime.broadcast_workflow_event") as broadcast:
-            with django_capture_on_commit_callbacks(execute=True):
-                if rollback:
-                    with pytest.raises(ValueError):
-                        model_admin.history_form_view(studio.request, str(studio.task.pk), "1")
-                else:
-                    assert model_admin.history_form_view(studio.request, str(studio.task.pk), "1") == "reverted"
-                broadcast.assert_not_called()
+    with (
+        patch.object(SimpleHistoryAdmin, "history_form_view", library_revert),
+        patch("design_workflow.admin_realtime.broadcast_workflow_event") as broadcast,
+    ):
+        with django_capture_on_commit_callbacks(execute=True):
             if rollback:
-                broadcast.assert_not_called()
+                with pytest.raises(ValueError):
+                    model_admin.history_form_view(
+                        studio.request, str(studio.task.pk), "1"
+                    )
             else:
-                broadcast.assert_called_once_with("admin")
+                assert (
+                    model_admin.history_form_view(
+                        studio.request, str(studio.task.pk), "1"
+                    )
+                    == "reverted"
+                )
+            broadcast.assert_not_called()
+        if rollback:
+            broadcast.assert_not_called()
+        else:
+            broadcast.assert_called_once_with("admin")
     assert not hasattr(studio.request, "_workflow_history_revert")
     studio.task.refresh_from_db()
     assert studio.task.actual_minutes == (45 if rollback else 105)

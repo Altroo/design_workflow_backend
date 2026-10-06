@@ -1,7 +1,9 @@
-from django.contrib import admin
-from django.contrib.admin.sites import AlreadyRegistered
-from .admin_realtime import WorkflowRealtimeAdmin
+from contextlib import suppress
 
+from django.contrib import admin
+from django.contrib.admin.exceptions import AlreadyRegistered
+
+from .admin_realtime import WorkflowRealtimeAdmin
 from .models import (
     AttachmentAnnotation,
     ChatMessage,
@@ -16,15 +18,14 @@ from .models import (
     SavedView,
     Task,
     TaskActivity,
-    TaskAttachment,
     TaskArtifactVersion,
+    TaskAttachment,
     TaskChecklist,
     TaskChecklistItem,
     TaskComment,
     TaskLabel,
     TimeEntry,
 )
-
 
 HISTORY_FIELDS = (
     "history_id",
@@ -66,17 +67,26 @@ def _history_admin_class(model, display_fields, list_filter=(), search_fields=()
     return type(f"Historical{model.__name__}Admin", (admin.ModelAdmin,), attrs)
 
 
-def register_history_admin(model, *, display_fields=("id",), list_filter=(), search_fields=()):
-    admin_class = _history_admin_class(model, display_fields, list_filter, search_fields)
-    try:
+def register_history_admin(
+    model, *, display_fields=("id",), list_filter=(), search_fields=()
+):
+    admin_class = _history_admin_class(
+        model, display_fields, list_filter, search_fields
+    )
+    with suppress(AlreadyRegistered):
         admin.site.register(model.history.model, admin_class)
-    except AlreadyRegistered:
-        pass
 
 
 @admin.register(Project)
 class ProjectAdmin(WorkflowRealtimeAdmin):
-    list_display = ("name", "manager", "status", "priority", "archived", "target_end_date")
+    list_display = (
+        "name",
+        "manager",
+        "status",
+        "priority",
+        "archived",
+        "target_end_date",
+    )
     list_filter = ("status", "priority", "archived")
     search_fields = ("name", "description")
 
@@ -84,7 +94,15 @@ class ProjectAdmin(WorkflowRealtimeAdmin):
 @admin.register(Task)
 class TaskAdmin(WorkflowRealtimeAdmin):
     readonly_fields = ("actual_minutes", "work_started_at")
-    list_display = ("title", "project", "current_assignee", "status", "priority", "due_date", "actual_minutes")
+    list_display = (
+        "title",
+        "project",
+        "current_assignee",
+        "status",
+        "priority",
+        "due_date",
+        "actual_minutes",
+    )
     list_filter = ("status", "priority", "project")
     search_fields = ("title", "description", "project__name")
 
@@ -109,22 +127,49 @@ class TaskActivityAdmin(WorkflowRealtimeAdmin):
 
 @admin.register(Notification)
 class NotificationAdmin(WorkflowRealtimeAdmin):
-    list_display = ("recipient", "type", "task", "read_at", "snoozed_until", "action_taken_at", "created_at")
+    list_display = (
+        "recipient",
+        "type",
+        "task",
+        "read_at",
+        "snoozed_until",
+        "action_taken_at",
+        "created_at",
+    )
     list_filter = ("type", "read_at", "snoozed_until")
 
 
 @admin.register(NotificationPreference)
 class NotificationPreferenceAdmin(WorkflowRealtimeAdmin):
-    list_display = ("user", "mentions", "assignments", "review_requests", "due_soon", "digest_frequency")
-    list_filter = ("digest_frequency", "mentions", "assignments", "review_requests", "due_soon")
+    list_display = (
+        "user",
+        "mentions",
+        "assignments",
+        "review_requests",
+        "due_soon",
+        "digest_frequency",
+    )
+    list_filter = (
+        "digest_frequency",
+        "mentions",
+        "assignments",
+        "review_requests",
+        "due_soon",
+    )
 
 
 @admin.register(SavedView)
 class SavedViewAdmin(WorkflowRealtimeAdmin):
-    list_display = ("name", "owner", "visibility", "density", "is_default", "updated_at")
+    list_display = (
+        "name",
+        "owner",
+        "visibility",
+        "density",
+        "is_default",
+        "updated_at",
+    )
     list_filter = ("visibility", "density", "is_default")
     search_fields = ("name", "owner__email")
-
 
 
 @admin.register(TaskLabel)
@@ -154,14 +199,28 @@ class TaskAttachmentAdmin(WorkflowRealtimeAdmin):
 
 @admin.register(TaskArtifactVersion)
 class TaskArtifactVersionAdmin(WorkflowRealtimeAdmin):
-    list_display = ("task", "version_number", "approval_state", "uploaded_by", "approved_by", "created_at")
+    list_display = (
+        "task",
+        "version_number",
+        "approval_state",
+        "uploaded_by",
+        "approved_by",
+        "created_at",
+    )
     list_filter = ("approval_state",)
     search_fields = ("task__title", "notes", "attachment__name")
 
 
 @admin.register(AttachmentAnnotation)
 class AttachmentAnnotationAdmin(WorkflowRealtimeAdmin):
-    list_display = ("attachment", "author", "x_percent", "y_percent", "resolved", "created_at")
+    list_display = (
+        "attachment",
+        "author",
+        "x_percent",
+        "y_percent",
+        "resolved",
+        "created_at",
+    )
     list_filter = ("resolved",)
     search_fields = ("body", "attachment__name", "attachment__task__title")
 
@@ -205,13 +264,30 @@ class ChatMessageReminderAdmin(WorkflowRealtimeAdmin):
 
 register_history_admin(
     Project,
-    display_fields=("id", "name", "manager", "status", "priority", "archived", "target_end_date"),
+    display_fields=(
+        "id",
+        "name",
+        "manager",
+        "status",
+        "priority",
+        "archived",
+        "target_end_date",
+    ),
     list_filter=("status", "priority", "archived"),
     search_fields=("name", "description"),
 )
 register_history_admin(
     Task,
-    display_fields=("id", "title", "project", "current_assignee", "status", "priority", "due_date", "actual_minutes"),
+    display_fields=(
+        "id",
+        "title",
+        "project",
+        "current_assignee",
+        "status",
+        "priority",
+        "due_date",
+        "actual_minutes",
+    ),
     list_filter=("status", "priority", "project"),
     search_fields=("title", "description", "project__name"),
 )
@@ -232,17 +308,47 @@ register_history_admin(
 )
 register_history_admin(
     Notification,
-    display_fields=("id", "recipient", "type", "task", "read_at", "snoozed_until", "created_at"),
+    display_fields=(
+        "id",
+        "recipient",
+        "type",
+        "task",
+        "read_at",
+        "snoozed_until",
+        "created_at",
+    ),
     list_filter=("type", "read_at", "snoozed_until"),
 )
 register_history_admin(
     NotificationPreference,
-    display_fields=("id", "user", "mentions", "assignments", "review_requests", "due_soon", "digest_frequency"),
-    list_filter=("digest_frequency", "mentions", "assignments", "review_requests", "due_soon"),
+    display_fields=(
+        "id",
+        "user",
+        "mentions",
+        "assignments",
+        "review_requests",
+        "due_soon",
+        "digest_frequency",
+    ),
+    list_filter=(
+        "digest_frequency",
+        "mentions",
+        "assignments",
+        "review_requests",
+        "due_soon",
+    ),
 )
 register_history_admin(
     SavedView,
-    display_fields=("id", "name", "owner", "visibility", "density", "is_default", "updated_at"),
+    display_fields=(
+        "id",
+        "name",
+        "owner",
+        "visibility",
+        "density",
+        "is_default",
+        "updated_at",
+    ),
     list_filter=("visibility", "density", "is_default"),
     search_fields=("name", "owner__email"),
 )
@@ -253,7 +359,15 @@ register_history_admin(
 )
 register_history_admin(
     TaskChecklistItem,
-    display_fields=("id", "task", "checklist", "title", "done", "sort_order", "created_by"),
+    display_fields=(
+        "id",
+        "task",
+        "checklist",
+        "title",
+        "done",
+        "sort_order",
+        "created_by",
+    ),
     list_filter=("done",),
     search_fields=("title", "task__title"),
 )
@@ -269,13 +383,29 @@ register_history_admin(
 )
 register_history_admin(
     TaskArtifactVersion,
-    display_fields=("id", "task", "version_number", "approval_state", "uploaded_by", "approved_by", "created_at"),
+    display_fields=(
+        "id",
+        "task",
+        "version_number",
+        "approval_state",
+        "uploaded_by",
+        "approved_by",
+        "created_at",
+    ),
     list_filter=("approval_state",),
     search_fields=("task__title", "notes", "attachment__name"),
 )
 register_history_admin(
     AttachmentAnnotation,
-    display_fields=("id", "attachment", "author", "x_percent", "y_percent", "resolved", "created_at"),
+    display_fields=(
+        "id",
+        "attachment",
+        "author",
+        "x_percent",
+        "y_percent",
+        "resolved",
+        "created_at",
+    ),
     list_filter=("resolved",),
     search_fields=("body", "attachment__name", "attachment__task__title"),
 )

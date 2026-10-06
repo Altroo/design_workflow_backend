@@ -2,7 +2,6 @@ import re
 
 from django.contrib.auth import get_user_model
 from django.db.models import Sum
-from django.utils import timezone
 from rest_framework import serializers
 
 from .models import (
@@ -21,15 +20,15 @@ from .models import (
     SavedViewVisibility,
     Task,
     TaskActivity,
-    TaskAttachment,
     TaskArtifactVersion,
+    TaskAttachment,
     TaskChecklist,
     TaskChecklistItem,
+    TaskComment,
     TaskLabel,
     TaskReviewState,
     TaskStatus,
     TimeEntry,
-    TaskComment,
 )
 from .permissions import can_create_task_in_project, can_manage_project, can_mutate_task
 
@@ -40,17 +39,33 @@ def live_minutes(context, *, task_id=None, project_id=None):
     # One read-only snapshot per serialization tree, reused by nested cards.
     if "_active_minutes" not in context:
         from .time_tracking import active_session_minutes
+
         # Read closed totals for the whole tree before active sessions. Reading
         # each project's total later could count a just-closed session twice.
-        context["_logged_projects"] = dict(TimeEntry.objects.values("task__project_id").annotate(
-            total=Sum("minutes"),
-        ).values_list("task__project_id", "total"))
-        context["_logged_tasks"] = dict(Task.objects.values_list("pk", "actual_minutes"))
+        context["_logged_projects"] = dict(
+            TimeEntry.objects.values("task__project_id")
+            .annotate(
+                total=Sum("minutes"),
+            )
+            .values_list("task__project_id", "total")
+        )
+        context["_logged_tasks"] = dict(
+            Task.objects.values_list("pk", "actual_minutes")
+        )
         context["_active_minutes"] = active_session_minutes()
-        context["_active_projects"] = dict(Task.objects.filter(work_sessions__isnull=False).values_list("pk", "project_id"))
-    return sum(minutes for (card_id, _user_id, _date), minutes in context["_active_minutes"].items()
-               if (task_id is None or card_id == task_id)
-               and (project_id is None or context["_active_projects"].get(card_id) == project_id))
+        context["_active_projects"] = dict(
+            Task.objects.filter(work_sessions__isnull=False).values_list(
+                "pk", "project_id"
+            )
+        )
+    return sum(
+        minutes
+        for (card_id, _user_id, _date), minutes in context["_active_minutes"].items()
+        if (task_id is None or card_id == task_id)
+        and (
+            project_id is None or context["_active_projects"].get(card_id) == project_id
+        )
+    )
 
 
 class UserSummarySerializer(serializers.ModelSerializer):
@@ -58,7 +73,9 @@ class UserSummarySerializer(serializers.ModelSerializer):
 
     @staticmethod
     def get_avatar(instance):
-        return instance.get_absolute_avatar_cropped_img or instance.get_absolute_avatar_img
+        return (
+            instance.get_absolute_avatar_cropped_img or instance.get_absolute_avatar_img
+        )
 
     class Meta:
         model = User
@@ -73,26 +90,43 @@ class ProjectSummarySerializer(serializers.ModelSerializer):
     def get_total_logged_minutes(self, obj):
         active = live_minutes(self.context, project_id=obj.pk)
         return self.context["_logged_projects"].get(obj.pk, 0) + active
+
     open_tasks_count = serializers.IntegerField(read_only=True)
     can_work = serializers.SerializerMethodField()
     can_manage = serializers.SerializerMethodField()
 
     def get_can_manage(self, obj):
-        return can_manage_project(getattr(self.context.get("request"), "user", None), obj)
+        return can_manage_project(
+            getattr(self.context.get("request"), "user", None), obj
+        )
 
     def get_can_work(self, obj):
         request = self.context.get("request")
         user = getattr(request, "user", None)
-        if not user or not user.is_authenticated:
+        if user is None or not user.is_authenticated:
             return False
         return can_create_task_in_project(user, obj)
 
     class Meta:
         model = Project
         fields = (
-            "id", "name", "description", "manager", "start_date", "target_end_date",
-            "priority", "status", "archived", "archived_at", "total_logged_minutes",
-            "open_tasks_count", "can_work", "can_manage", "collaborators", "created_at", "updated_at",
+            "id",
+            "name",
+            "description",
+            "manager",
+            "start_date",
+            "target_end_date",
+            "priority",
+            "status",
+            "archived",
+            "archived_at",
+            "total_logged_minutes",
+            "open_tasks_count",
+            "can_work",
+            "can_manage",
+            "collaborators",
+            "created_at",
+            "updated_at",
         )
 
 
@@ -106,12 +140,16 @@ class TaskLabelSerializer(serializers.ModelSerializer):
     def validate_name(self, value):
         name = value.strip()
         request = self.context.get("request")
-        if request and request.user.is_authenticated:
-            queryset = TaskLabel.objects.filter(created_by=request.user, name__iexact=name)
-            if self.instance:
+        if request is not None and request.user.is_authenticated:
+            queryset = TaskLabel.objects.filter(
+                created_by=request.user, name__iexact=name
+            )
+            if self.instance is not None:
                 queryset = queryset.exclude(pk=self.instance.pk)
             if queryset.exists():
-                raise serializers.ValidationError("You already have a label with this name.")
+                raise serializers.ValidationError(
+                    "You already have a label with this name."
+                )
         return name
 
     @staticmethod
@@ -144,10 +182,14 @@ class SavedViewSerializer(serializers.ModelSerializer):
 
     def validate_visibility(self, value):
         request = self.context.get("request")
-        if value == SavedViewVisibility.TEAM and request and not (
-            request.user.role == "manager"
-            or request.user.is_staff
-            or getattr(request.user, "is_superuser", False)
+        if (
+            value == SavedViewVisibility.TEAM
+            and request is not None
+            and not (
+                request.user.role == "manager"
+                or request.user.is_staff
+                or getattr(request.user, "is_superuser", False)
+            )
         ):
             raise serializers.ValidationError("Only managers can share team views.")
         return value
@@ -161,8 +203,16 @@ class TaskChecklistItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = TaskChecklistItem
         fields = (
-            "id", "checklist_id", "title", "done", "sort_order", "created_by", "completed_by",
-            "completed_at", "created_at", "updated_at",
+            "id",
+            "checklist_id",
+            "title",
+            "done",
+            "sort_order",
+            "created_by",
+            "completed_by",
+            "completed_at",
+            "created_at",
+            "updated_at",
         )
 
 
@@ -172,7 +222,15 @@ class TaskChecklistSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = TaskChecklist
-        fields = ("id", "title", "sort_order", "created_by", "items", "created_at", "updated_at")
+        fields = (
+            "id",
+            "title",
+            "sort_order",
+            "created_by",
+            "items",
+            "created_at",
+            "updated_at",
+        )
 
 
 class TaskAttachmentSerializer(serializers.ModelSerializer):
@@ -183,8 +241,16 @@ class TaskAttachmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = TaskAttachment
         fields = (
-            "id", "uploaded_by", "file", "file_url", "name", "mime_type", "size",
-            "annotation_count", "created_at", "updated_at",
+            "id",
+            "uploaded_by",
+            "file",
+            "file_url",
+            "name",
+            "mime_type",
+            "size",
+            "annotation_count",
+            "created_at",
+            "updated_at",
         )
         read_only_fields = ("file",)
 
@@ -193,7 +259,7 @@ class TaskAttachmentSerializer(serializers.ModelSerializer):
             return None
         request = self.context.get("request")
         url = obj.file.url
-        return request.build_absolute_uri(url) if request else url
+        return request.build_absolute_uri(url) if request is not None else url
 
     def get_annotation_count(self, obj):
         return obj.annotations.count()
@@ -223,12 +289,40 @@ class TaskCardSerializer(serializers.ModelSerializer):
     class Meta:
         model = Task
         fields = (
-            "id", "project", "title", "description", "current_assignee", "status",
-            "priority", "due_date", "estimated_minutes", "actual_minutes", "review_state",
-            "review_requested_by", "review_requested_at", "review_approved_by", "review_approved_at", "blocked_reason",
-            "sort_order", "labels", "checklists", "checklist_items", "attachments", "cover_image_url", "cover_image_label", "archived", "archived_at",
-            "is_completed", "completed_at", "work_started_at", "is_overdue", "source_chat_message_id", "source_chat_thread_id",
-            "can_edit", "created_at", "updated_at",
+            "id",
+            "project",
+            "title",
+            "description",
+            "current_assignee",
+            "status",
+            "priority",
+            "due_date",
+            "estimated_minutes",
+            "actual_minutes",
+            "review_state",
+            "review_requested_by",
+            "review_requested_at",
+            "review_approved_by",
+            "review_approved_at",
+            "blocked_reason",
+            "sort_order",
+            "labels",
+            "checklists",
+            "checklist_items",
+            "attachments",
+            "cover_image_url",
+            "cover_image_label",
+            "archived",
+            "archived_at",
+            "is_completed",
+            "completed_at",
+            "work_started_at",
+            "is_overdue",
+            "source_chat_message_id",
+            "source_chat_thread_id",
+            "can_edit",
+            "created_at",
+            "updated_at",
         )
 
     def get_can_edit(self, obj):
@@ -239,7 +333,7 @@ class TaskCardSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         if obj.cover_image:
             url = obj.cover_image.url
-            return request.build_absolute_uri(url) if request else url
+            return request.build_absolute_uri(url) if request is not None else url
         first_image = next(
             (
                 attachment
@@ -248,15 +342,15 @@ class TaskCardSerializer(serializers.ModelSerializer):
             ),
             None,
         )
-        if not first_image or not first_image.file:
+        if first_image is None or not first_image.file:
             return None
         url = first_image.file.url
-        return request.build_absolute_uri(url) if request else url
+        return request.build_absolute_uri(url) if request is not None else url
 
     def get_labels(self, obj):
         request = self.context.get("request")
         labels = obj.labels.all()
-        if request and request.user.is_authenticated:
+        if request is not None and request.user.is_authenticated:
             labels = labels.filter(created_by=request.user)
         return TaskLabelSerializer(labels, many=True, context=self.context).data
 
@@ -279,7 +373,15 @@ class TimeEntrySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = TimeEntry
-        fields = ("id", "user", "minutes", "work_date", "note", "created_at", "updated_at")
+        fields = (
+            "id",
+            "user",
+            "minutes",
+            "work_date",
+            "note",
+            "created_at",
+            "updated_at",
+        )
 
 
 class TaskArtifactVersionSerializer(serializers.ModelSerializer):
@@ -310,7 +412,13 @@ class TaskArtifactVersionSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         )
-        read_only_fields = ("task", "version_number", "uploaded_by", "approved_by", "approved_at")
+        read_only_fields = (
+            "task",
+            "version_number",
+            "uploaded_by",
+            "approved_by",
+            "approved_at",
+        )
 
 
 class AttachmentAnnotationSerializer(serializers.ModelSerializer):
@@ -341,7 +449,13 @@ class AttachmentAnnotationSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         )
-        read_only_fields = ("attachment", "version", "author", "resolved_by", "resolved_at")
+        read_only_fields = (
+            "attachment",
+            "version",
+            "author",
+            "resolved_by",
+            "resolved_at",
+        )
 
 
 class TaskActivitySerializer(serializers.ModelSerializer):
@@ -381,7 +495,12 @@ class TaskDetailSerializer(TaskCardSerializer):
 
     class Meta(TaskCardSerializer.Meta):
         fields = TaskCardSerializer.Meta.fields + (
-            "comments", "artifact_versions", "recent_activity", "time_entries", "contributors", "total_logged_minutes",
+            "comments",
+            "artifact_versions",
+            "recent_activity",
+            "time_entries",
+            "contributors",
+            "total_logged_minutes",
         )
 
     def get_recent_activity(self, obj):
@@ -398,7 +517,9 @@ class TaskDetailSerializer(TaskCardSerializer):
         if obj.current_assignee_id:
             contributor_ids.add(obj.current_assignee_id)
         contributor_ids.update(commenter_ids)
-        contributors = User.objects.filter(id__in=contributor_ids).order_by("first_name", "last_name")
+        contributors = User.objects.filter(id__in=contributor_ids).order_by(
+            "first_name", "last_name"
+        )
         return UserSummarySerializer(contributors, many=True).data
 
 
@@ -409,34 +530,65 @@ class ProjectDetailSerializer(ProjectSummarySerializer):
     contributors = serializers.SerializerMethodField()
 
     class Meta(ProjectSummarySerializer.Meta):
-        fields = ProjectSummarySerializer.Meta.fields + ("tasks", "recent_comments", "recent_activity", "contributors")
+        fields = ProjectSummarySerializer.Meta.fields + (
+            "tasks",
+            "recent_comments",
+            "recent_activity",
+            "contributors",
+        )
 
     def get_tasks(self, obj):
-        tasks = obj.tasks.filter(archived=False).select_related("project__manager", "current_assignee").prefetch_related(
-            "project__collaborators",
-            "labels",
-            "checklists__created_by",
-            "checklists__items__created_by",
-            "checklists__items__completed_by",
-            "checklist_items__created_by",
-            "checklist_items__completed_by",
-            "attachments__uploaded_by",
+        tasks = (
+            obj.tasks.filter(archived=False)
+            .select_related("project__manager", "current_assignee")
+            .prefetch_related(
+                "project__collaborators",
+                "labels",
+                "checklists__created_by",
+                "checklists__items__created_by",
+                "checklists__items__completed_by",
+                "checklist_items__created_by",
+                "checklist_items__completed_by",
+                "attachments__uploaded_by",
+            )
         )
         return TaskCardSerializer(tasks, many=True, context=self.context).data
 
     def get_recent_comments(self, obj):
-        comments = TaskComment.objects.filter(task__project=obj).select_related("author", "task").order_by("-created_at")[:20]
+        comments = (
+            TaskComment.objects.filter(task__project=obj)
+            .select_related("author", "task")
+            .order_by("-created_at")[:20]
+        )
         return ProjectTaskCommentSerializer(comments, many=True).data
 
     def get_recent_activity(self, obj):
-        activities = TaskActivity.objects.filter(task__project=obj).select_related("actor", "task").order_by("-created_at")[:30]
+        activities = (
+            TaskActivity.objects.filter(task__project=obj)
+            .select_related("actor", "task")
+            .order_by("-created_at")[:30]
+        )
         return ProjectTaskActivitySerializer(activities, many=True).data
 
     def get_contributors(self, obj):
-        contributor_ids = set(TaskComment.objects.filter(task__project=obj).values_list("author_id", flat=True))
-        contributor_ids.update(TimeEntry.objects.filter(task__project=obj).values_list("user_id", flat=True))
-        contributor_ids.update(Task.objects.filter(project=obj, current_assignee_id__isnull=False).values_list("current_assignee_id", flat=True))
-        contributors = User.objects.filter(id__in=contributor_ids).order_by("first_name", "last_name")
+        contributor_ids = set(
+            TaskComment.objects.filter(task__project=obj).values_list(
+                "author_id", flat=True
+            )
+        )
+        contributor_ids.update(
+            TimeEntry.objects.filter(task__project=obj).values_list(
+                "user_id", flat=True
+            )
+        )
+        contributor_ids.update(
+            Task.objects.filter(
+                project=obj, current_assignee_id__isnull=False
+            ).values_list("current_assignee_id", flat=True)
+        )
+        contributors = User.objects.filter(id__in=contributor_ids).order_by(
+            "first_name", "last_name"
+        )
         return UserSummarySerializer(contributors, many=True).data
 
 
@@ -525,27 +677,55 @@ class WorkflowAnalyticsSerializer(serializers.Serializer):
 
 
 class ProjectWriteSerializer(serializers.ModelSerializer):
-    manager_id = serializers.PrimaryKeyRelatedField(source="manager", queryset=User.objects.filter(is_active=True))
+    manager_id = serializers.PrimaryKeyRelatedField(
+        source="manager", queryset=User.objects.filter(is_active=True)
+    )
     collaborator_ids = serializers.PrimaryKeyRelatedField(
-        source="collaborators", queryset=User.objects.filter(is_active=True), many=True, required=False,
+        source="collaborators",
+        queryset=User.objects.filter(is_active=True),
+        many=True,
+        required=False,
     )
 
     class Meta:
         model = Project
-        fields = ("name", "description", "manager_id", "collaborator_ids", "start_date", "target_end_date", "priority", "status", "archived")
+        fields = (
+            "name",
+            "description",
+            "manager_id",
+            "collaborator_ids",
+            "start_date",
+            "target_end_date",
+            "priority",
+            "status",
+            "archived",
+        )
 
     def validate(self, attrs):
         start_date = attrs.get("start_date", getattr(self.instance, "start_date", None))
-        target_end_date = attrs.get("target_end_date", getattr(self.instance, "target_end_date", None))
+        target_end_date = attrs.get(
+            "target_end_date", getattr(self.instance, "target_end_date", None)
+        )
         if start_date and target_end_date and target_end_date < start_date:
-            raise serializers.ValidationError({"target_end_date": "Target end date cannot be before start date."})
+            raise serializers.ValidationError(
+                {"target_end_date": "Target end date cannot be before start date."}
+            )
         return attrs
 
 
 class TaskWriteSerializer(serializers.ModelSerializer):
-    project_id = serializers.PrimaryKeyRelatedField(source="project", queryset=Project.objects.all())
-    current_assignee_id = serializers.PrimaryKeyRelatedField(source="current_assignee", queryset=User.objects.filter(is_active=True), required=False, allow_null=True)
-    label_ids = serializers.PrimaryKeyRelatedField(source="labels", queryset=TaskLabel.objects.all(), many=True, required=False)
+    project_id = serializers.PrimaryKeyRelatedField(
+        source="project", queryset=Project.objects.all()
+    )
+    current_assignee_id = serializers.PrimaryKeyRelatedField(
+        source="current_assignee",
+        queryset=User.objects.filter(is_active=True),
+        required=False,
+        allow_null=True,
+    )
+    label_ids = serializers.PrimaryKeyRelatedField(
+        source="labels", queryset=TaskLabel.objects.all(), many=True, required=False
+    )
     source_chat_message_id = serializers.PrimaryKeyRelatedField(
         source="source_chat_message",
         queryset=ChatMessage.objects.select_related("thread"),
@@ -556,32 +736,61 @@ class TaskWriteSerializer(serializers.ModelSerializer):
     class Meta:
         model = Task
         fields = (
-            "project_id", "title", "description", "current_assignee_id", "status", "priority",
-            "due_date", "estimated_minutes", "blocked_reason", "sort_order", "label_ids", "archived",
+            "project_id",
+            "title",
+            "description",
+            "current_assignee_id",
+            "status",
+            "priority",
+            "due_date",
+            "estimated_minutes",
+            "blocked_reason",
+            "sort_order",
+            "label_ids",
+            "archived",
             "source_chat_message_id",
         )
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
         request = self.context.get("request")
-        if request and request.user.is_authenticated:
+        if request is not None and request.user.is_authenticated:
             # Match the card's private-label view when checking edit baselines.
-            data["label_ids"] = list(instance.labels.filter(created_by=request.user).values_list("pk", flat=True))
+            data["label_ids"] = list(
+                instance.labels.filter(created_by=request.user).values_list(
+                    "pk", flat=True
+                )
+            )
         return data
 
     def validate(self, attrs):
         due_date = attrs.get("due_date", getattr(self.instance, "due_date", None))
         project = attrs.get("project", getattr(self.instance, "project", None))
-        if due_date and project and project.start_date and due_date < project.start_date:
-            raise serializers.ValidationError({"due_date": "Due date cannot be before project start date."})
+        if (
+            due_date
+            and project
+            and project.start_date
+            and due_date < project.start_date
+        ):
+            raise serializers.ValidationError(
+                {"due_date": "Due date cannot be before project start date."}
+            )
         archived = attrs.get("archived", getattr(self.instance, "archived", False))
         if project and project.archived and not archived:
-            raise serializers.ValidationError({"archived": "Unarchive the project before restoring or adding tasks."})
+            raise serializers.ValidationError(
+                {"archived": "Unarchive the project before restoring or adding tasks."}
+            )
         labels = attrs.get("labels")
         request = self.context.get("request")
-        if labels is not None and request and request.user.is_authenticated:
-            if any(label.created_by_id != request.user.id for label in labels):
-                raise serializers.ValidationError({"label_ids": "You can only use labels you created."})
+        if (
+            labels is not None
+            and request is not None
+            and request.user.is_authenticated
+            and any(label.created_by_id != request.user.id for label in labels)
+        ):
+            raise serializers.ValidationError(
+                {"label_ids": "You can only use labels you created."}
+            )
         return attrs
 
     def update(self, instance, validated_data):
@@ -590,9 +799,11 @@ class TaskWriteSerializer(serializers.ModelSerializer):
         if labels is not None:
             request = self.context.get("request")
             other_label_ids = []
-            if request and request.user.is_authenticated:
+            if request is not None and request.user.is_authenticated:
                 other_label_ids = list(
-                    instance.labels.exclude(created_by=request.user).values_list("id", flat=True)
+                    instance.labels.exclude(created_by=request.user).values_list(
+                        "id", flat=True
+                    )
                 )
             instance.labels.set([*other_label_ids, *(label.id for label in labels)])
         return instance
@@ -629,7 +840,9 @@ class TaskReviewUpdateSerializer(serializers.Serializer):
 
 
 class TaskReassignSerializer(serializers.Serializer):
-    assignee_id = serializers.PrimaryKeyRelatedField(queryset=User.objects.filter(is_active=True), source="assignee")
+    assignee_id = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.filter(is_active=True), source="assignee"
+    )
     reason = serializers.CharField()
 
 
@@ -675,7 +888,16 @@ class ChatAttachmentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ChatMessageAttachment
-        fields = ("id", "file", "file_url", "name", "mime_type", "size", "created_at", "updated_at")
+        fields = (
+            "id",
+            "file",
+            "file_url",
+            "name",
+            "mime_type",
+            "size",
+            "created_at",
+            "updated_at",
+        )
         read_only_fields = ("file",)
 
     def get_file_url(self, obj):
@@ -683,7 +905,7 @@ class ChatAttachmentSerializer(serializers.ModelSerializer):
             return None
         request = self.context.get("request")
         url = obj.file.url
-        return request.build_absolute_uri(url) if request else url
+        return request.build_absolute_uri(url) if request is not None else url
 
 
 class ChatMessageReplySerializer(serializers.ModelSerializer):
@@ -716,7 +938,17 @@ class ChatReminderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ChatMessageReminder
-        fields = ("id", "task", "created_by", "remind_at", "note", "done_at", "delivered_at", "created_at", "updated_at")
+        fields = (
+            "id",
+            "task",
+            "created_by",
+            "remind_at",
+            "note",
+            "done_at",
+            "delivered_at",
+            "created_at",
+            "updated_at",
+        )
 
 
 class ChatEditSerializer(serializers.ModelSerializer):
@@ -774,7 +1006,10 @@ class ChatMessageSerializer(serializers.ModelSerializer):
         return "Message deleted" if obj.deleted_at else obj.body
 
     def get_edit_count(self, obj):
-        if hasattr(obj, "_prefetched_objects_cache") and "edit_history" in obj._prefetched_objects_cache:
+        if (
+            hasattr(obj, "_prefetched_objects_cache")
+            and "edit_history" in obj._prefetched_objects_cache
+        ):
             return len(obj._prefetched_objects_cache["edit_history"])
         return obj.edit_history.count()
 
@@ -790,17 +1025,45 @@ class ChatThreadSerializer(serializers.ModelSerializer):
     class Meta:
         model = ChatThread
         fields = (
-            "id", "kind", "title", "project", "task", "participants", "last_message",
-            "unread_count", "context_url", "created_at", "updated_at",
+            "id",
+            "kind",
+            "title",
+            "project",
+            "task",
+            "participants",
+            "last_message",
+            "unread_count",
+            "context_url",
+            "created_at",
+            "updated_at",
         )
 
     def get_last_message(self, obj):
-        message = obj.messages.select_related("sender", "reply_to", "reply_to__sender", "edited_by", "decision_by").prefetch_related("attachments", "read_by", "mentions", "reactions__user", "reminders__task__project", "reminders__created_by", "edit_history").last()
-        return ChatMessageSerializer(message, context=self.context).data if message else None
+        message = (
+            obj.messages.select_related(
+                "sender", "reply_to", "reply_to__sender", "edited_by", "decision_by"
+            )
+            .prefetch_related(
+                "attachments",
+                "read_by",
+                "mentions",
+                "reactions__user",
+                "reminders__task__project",
+                "reminders__created_by",
+                "edit_history",
+            )
+            .last()
+        )
+        return (
+            ChatMessageSerializer(message, context=self.context).data
+            if message
+            else None
+        )
 
     def get_unread_count(self, obj):
-        user = self.context.get("request").user if self.context.get("request") else None
-        if not user or not user.is_authenticated:
+        request = self.context.get("request")
+        user = request.user if request is not None else None
+        if user is None or not user.is_authenticated:
             return 0
         return obj.messages.exclude(sender=user).exclude(read_by=user).count()
 
@@ -813,16 +1076,31 @@ class ChatThreadSerializer(serializers.ModelSerializer):
 
 
 class ChatThreadCreateSerializer(serializers.Serializer):
-    kind = serializers.ChoiceField(choices=ChatThreadKind.choices, default=ChatThreadKind.PRIVATE)
+    kind = serializers.ChoiceField(
+        choices=ChatThreadKind.choices, default=ChatThreadKind.PRIVATE
+    )
     title = serializers.CharField(required=False, allow_blank=True)
-    recipient_id = serializers.PrimaryKeyRelatedField(queryset=User.objects.filter(is_active=True), source="recipient", required=False)
-    project_id = serializers.PrimaryKeyRelatedField(queryset=Project.objects.all(), source="project", required=False)
-    task_id = serializers.PrimaryKeyRelatedField(queryset=Task.objects.select_related("project", "current_assignee"), source="task", required=False)
+    recipient_id = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.filter(is_active=True), source="recipient", required=False
+    )
+    project_id = serializers.PrimaryKeyRelatedField(
+        queryset=Project.objects.all(), source="project", required=False
+    )
+    task_id = serializers.PrimaryKeyRelatedField(
+        queryset=Task.objects.select_related("project", "current_assignee"),
+        source="task",
+        required=False,
+    )
 
 
 class ChatMessageCreateSerializer(serializers.Serializer):
     body = serializers.CharField(required=False, allow_blank=True)
-    reply_to_id = serializers.PrimaryKeyRelatedField(queryset=ChatMessage.objects.all(), source="reply_to", required=False, allow_null=True)
+    reply_to_id = serializers.PrimaryKeyRelatedField(
+        queryset=ChatMessage.objects.all(),
+        source="reply_to",
+        required=False,
+        allow_null=True,
+    )
 
 
 class ChatMessageUpdateSerializer(serializers.Serializer):
@@ -838,7 +1116,9 @@ class ChatMessageDecisionSerializer(serializers.Serializer):
 
 
 class ChatMessageReminderCreateSerializer(serializers.Serializer):
-    task_id = serializers.PrimaryKeyRelatedField(queryset=Task.objects.all(), source="task", required=False, allow_null=True)
+    task_id = serializers.PrimaryKeyRelatedField(
+        queryset=Task.objects.all(), source="task", required=False, allow_null=True
+    )
     remind_at = serializers.DateTimeField(required=False, allow_null=True)
     note = serializers.CharField(required=False, allow_blank=True, max_length=255)
 
@@ -848,14 +1128,20 @@ class NotificationSnoozeSerializer(serializers.Serializer):
 
 
 class NotificationActionSerializer(serializers.Serializer):
-    action = serializers.ChoiceField(choices=("mark_read", "accept_assignment", "move_status", "comment"))
+    action = serializers.ChoiceField(
+        choices=("mark_read", "accept_assignment", "move_status", "comment")
+    )
     status = serializers.ChoiceField(choices=TaskStatus.choices, required=False)
     body = serializers.CharField(required=False, allow_blank=False)
 
     def validate(self, attrs):
         action = attrs.get("action")
         if action == "move_status" and "status" not in attrs:
-            raise serializers.ValidationError({"status": "This field is required for move_status actions."})
+            raise serializers.ValidationError(
+                {"status": "This field is required for move_status actions."}
+            )
         if action == "comment" and "body" not in attrs:
-            raise serializers.ValidationError({"body": "This field is required for comment actions."})
+            raise serializers.ValidationError(
+                {"body": "This field is required for comment actions."}
+            )
         return attrs

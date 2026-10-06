@@ -1,13 +1,13 @@
 from io import BytesIO
 from random import shuffle
 
-from PIL import Image, ImageDraw, ImageFont
 from asgiref.sync import async_to_sync
 from celery.utils.log import get_task_logger
 from channels.layers import get_channel_layer
 from django.core.exceptions import ObjectDoesNotExist
 from django.core.files import File
 from django.core.mail import EmailMessage
+from PIL import Image, ImageDraw, ImageFont
 
 from account.models import CustomUser
 from design_workflow_backend.celery_conf import app
@@ -32,7 +32,7 @@ def send_email(self, user_pk, email_, mail_subject, message, code=None, type_=No
         return
     except Exception as e:
         logger.error(f"Échec de l'envoi de l'e-mail pour l'utilisateur {user_pk} : {e}")
-        raise self.retry(exc=e, countdown=60)
+        raise self.retry(exc=e, countdown=60) from e
 
 
 @app.task(bind=True, serializer="json", max_retries=3)
@@ -51,7 +51,7 @@ def start_deleting_expired_codes(self, user_pk, type_):
         logger.error(
             f"Échec de la suppression des codes expirés pour l'utilisateur {user_pk} : {e}"
         )
-        raise self.retry(exc=e, countdown=300)
+        raise self.retry(exc=e, countdown=300) from e
 
 
 # For generating Avatar
@@ -123,7 +123,7 @@ def generate_avatar(last_name, first_name):
         font_avatar = ImageFont.load_default()
     drawn_avatar = ImageDraw.Draw(avatar)
     drawn_avatar.text(
-        (100, 136), "{}.{}".format(first_name, last_name), font=font_avatar, fill=fill
+        (100, 136), f"{first_name}.{last_name}", font=font_avatar, fill=fill
     )
     return avatar
 
@@ -143,7 +143,7 @@ def generate_user_thumbnail(self, user_pk):
         return
     except Exception as e:
         logger.error(f"Thumbnail génération échoué pour l'utilisateur {user_pk}: {e}")
-        raise self.retry(exc=e, countdown=120)
+        raise self.retry(exc=e, countdown=120) from e
 
 
 def resize_images_v2(bytes_) -> BytesIO:
@@ -187,4 +187,4 @@ def resize_avatar(self, object_pk: int, avatar: BytesIO | None):
         logger.error(
             f"Échec du redimensionnement de l'avatar pour l'utilisateur {object_pk} : {e}"
         )
-        raise self.retry(exc=e, countdown=60)
+        raise self.retry(exc=e, countdown=60) from e

@@ -19,17 +19,25 @@ class TaskFilter(django_filters.FilterSet):
     q = django_filters.CharFilter(method="filter_search")
     archived = django_filters.CharFilter(method="filter_archived")
     project = django_filters.CharFilter(field_name="project_id", lookup_expr="exact")
-    assignee = django_filters.CharFilter(field_name="current_assignee_id", lookup_expr="exact")
+    assignee = django_filters.CharFilter(
+        field_name="current_assignee_id", lookup_expr="exact"
+    )
     status = django_filters.CharFilter(field_name="status", lookup_expr="exact")
     priority = django_filters.CharFilter(field_name="priority", lookup_expr="exact")
-    review_state = django_filters.CharFilter(field_name="review_state", lookup_expr="exact")
+    review_state = django_filters.CharFilter(
+        field_name="review_state", lookup_expr="exact"
+    )
     label = django_filters.CharFilter(method="filter_label")
     overdue = django_filters.CharFilter(method="filter_overdue")
     blocked = django_filters.CharFilter(method="filter_blocked")
     mine = django_filters.CharFilter(method="filter_mine")
     my_projects = django_filters.CharFilter(method="filter_my_projects")
-    start_date = django_filters.CharFilter(field_name="project__start_date", lookup_expr="gte")
-    end_date = django_filters.CharFilter(field_name="project__target_end_date", lookup_expr="lte")
+    start_date = django_filters.CharFilter(
+        field_name="project__start_date", lookup_expr="gte"
+    )
+    end_date = django_filters.CharFilter(
+        field_name="project__target_end_date", lookup_expr="lte"
+    )
 
     class Meta:
         model = Task
@@ -61,7 +69,11 @@ class TaskFilter(django_filters.FilterSet):
 
     def filter_archived(self, queryset, name, value):
         archived = _parse_bool(value)
-        return queryset.filter(archived=False) if archived is None else queryset.filter(archived=archived)
+        return (
+            queryset.filter(archived=False)
+            if archived is None
+            else queryset.filter(archived=archived)
+        )
 
     def filter_search(self, queryset, name, value):
         query = (value or "").strip()
@@ -81,21 +93,25 @@ class TaskFilter(django_filters.FilterSet):
         return queryset.filter(labels__id=value, labels__created_by=self.user)
 
     def filter_overdue(self, queryset, name, value):
-        if _parse_bool(value) is True:
-            return queryset.filter(due_date__lt=timezone.localdate()).exclude(status=TaskStatus.DONE)
+        if _parse_bool(value):
+            return queryset.filter(due_date__lt=timezone.localdate()).exclude(
+                status=TaskStatus.DONE
+            )
         return queryset
 
     def filter_blocked(self, queryset, name, value):
-        if _parse_bool(value) is True:
+        if _parse_bool(value):
             return queryset.filter(status=TaskStatus.BLOCKED)
         return queryset
 
     def filter_mine(self, queryset, name, value):
-        if _parse_bool(value) is True and self.user is not None:
+        if _parse_bool(value) and self.user is not None:
             return queryset.filter(current_assignee=self.user)
         return queryset
 
     def filter_my_projects(self, queryset, name, value):
-        if _parse_bool(value) is True and self.user is not None:
-            return queryset.filter(Q(project__manager=self.user) | Q(project__collaborators=self.user)).distinct()
+        if _parse_bool(value) and self.user is not None:
+            return queryset.filter(
+                Q(project__manager=self.user) | Q(project__collaborators=self.user)
+            ).distinct()
         return queryset

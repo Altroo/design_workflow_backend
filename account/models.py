@@ -2,8 +2,7 @@ from io import BytesIO
 from os import path
 from uuid import uuid4
 
-from django.contrib.auth.models import AbstractBaseUser
-from django.contrib.auth.models import PermissionsMixin
+from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
 from django.core.files.base import ContentFile
 from django.db import models
 from django.utils import timezone
@@ -11,6 +10,7 @@ from django.utils.translation import gettext_lazy as _
 from simple_history.models import HistoricalRecords
 
 from design_workflow_backend.settings import API_URL
+
 from .managers import CustomUserManager
 
 
@@ -153,7 +153,7 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
     )
 
     def __str__(self):
-        full_name = "{} {}".format(self.first_name, self.last_name).strip()
+        full_name = f"{self.first_name} {self.last_name}".strip()
         return full_name if full_name else self.email
 
     @property
@@ -175,7 +175,9 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
 
     def save(self, *args, **kwargs):
         if not self.role:
-            self.role = self.UserRole.MANAGER if self.is_staff else self.UserRole.DESIGNER
+            self.role = (
+                self.UserRole.MANAGER if self.is_staff else self.UserRole.DESIGNER
+            )
         elif self.is_staff and self.role == self.UserRole.DESIGNER:
             self.role = self.UserRole.MANAGER
         super().save(*args, **kwargs)

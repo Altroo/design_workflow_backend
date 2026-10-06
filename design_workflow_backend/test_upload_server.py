@@ -3,8 +3,8 @@
 import asyncio
 import hashlib
 import json
-from pathlib import Path
 import shlex
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -30,9 +30,9 @@ async def test_large_requests_apply_backpressure_and_spill_to_disk(settings, siz
             received["spilled"] = body._rolled
             received["size"] = 0
             digest = hashlib.sha256()
-            while data := body.read(64 * 1024):
-                received["size"] += len(data)
-                digest.update(data)
+            while body_chunk := body.read(64 * 1024):
+                received["size"] += len(body_chunk)
+                digest.update(body_chunk)
             received["digest"] = digest.digest()
         finally:
             body.close()
@@ -46,23 +46,31 @@ async def test_large_requests_apply_backpressure_and_spill_to_disk(settings, siz
     protocol = H11Protocol(config, server_state, {})
     transport = Mock()
     transport.is_closing.return_value = False
-    transport.get_extra_info.side_effect = lambda key: ("127.0.0.1", 8004) if key in ("sockname", "peername") else None
+    transport.get_extra_info.side_effect = lambda key: (
+        ("127.0.0.1", 8004) if key in ("sockname", "peername") else None
+    )
     protocol.connection_made(transport)
     max_buffer = 0
     try:
-        protocol.data_received(f"POST /upload HTTP/1.1\r\nHost: localhost\r\nContent-Length: {total_size}\r\n\r\n".encode())
+        protocol.data_received(
+            f"POST /upload HTTP/1.1\r\nHost: localhost\r\nContent-Length: {total_size}\r\n\r\n".encode()
+        )
         remaining = total_size
         while remaining:
             # A real asyncio transport stops delivering data while paused.
             while protocol.flow.read_paused:
                 await asyncio.sleep(0)
-            data = chunk[:min(len(chunk), remaining)]
+            data = chunk[: min(len(chunk), remaining)]
             expected.update(data)
             protocol.data_received(data)
             max_buffer = max(max_buffer, len(protocol.cycle.body))
             remaining -= len(data)
         await asyncio.wait_for(asyncio.gather(*server_state.tasks), timeout=10)
-        assert received == {"spilled": True, "size": total_size, "digest": expected.digest()}
+        assert received == {
+            "spilled": True,
+            "size": total_size,
+            "digest": expected.digest(),
+        }
         assert max_buffer <= 128 * 1024
         assert transport.pause_reading.call_count > 0
         assert transport.resume_reading.call_count > 0
@@ -73,11 +81,23 @@ async def test_large_requests_apply_backpressure_and_spill_to_disk(settings, siz
 def test_container_entrypoints_use_the_backpressured_transport():
     root = Path(__file__).resolve().parent.parent
     dockerfile = (root / "Dockerfile").read_text()
-    command = next(line.removeprefix("CMD ") for line in dockerfile.splitlines() if line.startswith("CMD "))
+    command = next(
+        line.removeprefix("CMD ")
+        for line in dockerfile.splitlines()
+        if line.startswith("CMD ")
+    )
     compose = (root / "docker-compose.yml").read_text()
     web = compose.split("  web:\n", 1)[1].split("  db:\n", 1)[0]
-    compose_command = next(line.strip().removeprefix("command: ") for line in web.splitlines() if line.strip().startswith("command: "))
+    compose_command = next(
+        line.strip().removeprefix("command: ")
+        for line in web.splitlines()
+        if line.strip().startswith("command: ")
+    )
     for args in (json.loads(command), shlex.split(compose_command)):
         assert args[:2] == ["uvicorn", "design_workflow_backend.asgi:application"]
-        for option, value in (("--http", "h11"), ("--ws", "wsproto"), ("--lifespan", "off")):
+        for option, value in (
+            ("--http", "h11"),
+            ("--ws", "wsproto"),
+            ("--lifespan", "off"),
+        ):
             assert args[args.index(option) + 1] == value

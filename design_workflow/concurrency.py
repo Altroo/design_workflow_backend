@@ -3,7 +3,10 @@ from rest_framework.exceptions import APIException
 
 class EditConflict(APIException):
     status_code = 409
-    default_detail = "Cette donnée a été modifiée par une autre personne. Consultez la dernière version avant d’enregistrer."
+    default_detail = (
+        "Cette donnée a été modifiée par une autre personne. "
+        "Consultez la dernière version avant d’enregistrer."
+    )
     default_code = "edit_conflict"
 
 
