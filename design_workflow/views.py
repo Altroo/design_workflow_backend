@@ -8,7 +8,8 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
 from django.db import transaction
-from django.db.models import Max, Q, Sum
+from django.db.models import Count, Max, Q, Sum
+from django.db.models.functions import TruncDate
 from django.http import Http404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -807,9 +808,29 @@ class DashboardSummaryView(APIView):
         tasks = Task.objects.select_related("project").filter(
             archived=False, project__archived=False
         )
+        activity_start = today - timedelta(days=13)
+        created_by_day = dict(
+            tasks.filter(created_at__date__gte=activity_start, created_at__lte=now)
+            .annotate(day=TruncDate("created_at"))
+            .values("day")
+            .annotate(total=Count("pk"))
+            .values_list("day", "total")
+        )
+        completed_by_day = dict(
+            tasks.filter(
+                status=TaskStatus.DONE,
+                completed_at__date__gte=activity_start,
+                completed_at__lte=now,
+            )
+            .annotate(day=TruncDate("completed_at"))
+            .values("day")
+            .annotate(total=Count("pk"))
+            .values_list("day", "total")
+        )
         logged_minutes = int(
             TimeEntry.objects.filter(
                 work_date__gte=week_start,
+                work_date__lte=today,
                 task__archived=False,
                 task__project__archived=False,
             ).aggregate(total=Sum("minutes"))["total"]
@@ -819,6 +840,17 @@ class DashboardSummaryView(APIView):
             active_session_minutes(start_date=week_start, now=now).values()
         )
         payload = {
+            "backlog_tasks": tasks.filter(status=TaskStatus.BACKLOG).count(),
+            "daily_activity": [
+                {
+                    "date": day,
+                    "created": created_by_day.get(day, 0),
+                    "completed": completed_by_day.get(day, 0),
+                }
+                for day in (
+                    activity_start + timedelta(days=offset) for offset in range(14)
+                )
+            ],
             "active_projects": Project.objects.filter(
                 archived=False,
                 status__in=[

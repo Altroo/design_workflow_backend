@@ -637,7 +637,15 @@ class WorkspaceSearchResultSerializer(serializers.Serializer):
     metadata = serializers.DictField()
 
 
+class DashboardActivityDaySerializer(serializers.Serializer):
+    date = serializers.DateField()
+    created = serializers.IntegerField()
+    completed = serializers.IntegerField()
+
+
 class DashboardSummarySerializer(serializers.Serializer):
+    backlog_tasks = serializers.IntegerField()
+    daily_activity = DashboardActivityDaySerializer(many=True)
     active_projects = serializers.IntegerField()
     todo_tasks = serializers.IntegerField()
     in_progress_tasks = serializers.IntegerField()
