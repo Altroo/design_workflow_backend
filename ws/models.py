@@ -36,6 +36,13 @@ class WsMaintenanceState(models.Model):
 
 class ChangelogEntry(models.Model):
     date = models.DateField(default=timezone.localdate, unique=True)
+    version = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        validators=[app_version_validator],
+        help_text=_("Release version. Leave empty for older, unversioned entries."),
+    )
     title_fr = models.CharField(
         max_length=200, blank=True, verbose_name=_("Title — French")
     )

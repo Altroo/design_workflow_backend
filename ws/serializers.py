@@ -9,7 +9,15 @@ class ChangelogEntrySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ChangelogEntry
-        fields = ("id", "date", "title_fr", "title_en", "changes_fr", "changes_en")
+        fields = (
+            "id",
+            "date",
+            "version",
+            "title_fr",
+            "title_en",
+            "changes_fr",
+            "changes_en",
+        )
 
     @staticmethod
     def get_changes_fr(entry):

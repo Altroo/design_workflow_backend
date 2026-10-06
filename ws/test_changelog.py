@@ -36,7 +36,7 @@ def entry(**kwargs):
 def test_authenticated_members_get_complete_bilingual_published_history_only():
     today = timezone.localdate()
     entry(date=today - timedelta(days=3))
-    newest = entry()
+    newest = entry(version="1.0.0")
     entry(date=today - timedelta(days=1), is_published=False, title_fr="DRAFT SECRET")
     entry(date=today + timedelta(days=1), title_fr="FUTURE SECRET")
     client = APIClient()
@@ -50,6 +50,8 @@ def test_authenticated_members_get_complete_bilingual_published_history_only():
     assert response["Cache-Control"] == "no-store"
     assert len(response.data) == 2
     assert response.data[0]["id"] == newest.pk
+    assert response.data[0]["version"] == "1.0.0"
+    assert response.data[1]["version"] == ""
     assert response.data[0]["changes_fr"] == ["Une nouveauté.", "Une amélioration."]
     assert response.data[0]["changes_en"] == ["A new feature.", "An improvement."]
     assert "SECRET" not in str(response.data)
@@ -58,6 +60,17 @@ def test_authenticated_members_get_complete_bilingual_published_history_only():
 
 def test_history_requires_authentication():
     assert APIClient().get("/api/ws/changelog/").status_code in (401, 403)
+
+
+@pytest.mark.parametrize("version", ["", "1.0.0", "1.12.3"])
+def test_changelog_accepts_release_versions_and_unversioned_history(version):
+    entry(version=version).full_clean()
+
+
+@pytest.mark.parametrize("version", ["1", "01.0.0", "1.0.0-beta"])
+def test_changelog_rejects_invalid_versions(version):
+    with pytest.raises(ValidationError):
+        entry(version=version).full_clean()
 
 
 def test_drafts_can_be_incomplete_but_publishing_requires_both_languages():
@@ -138,3 +151,32 @@ def test_git_history_seed_is_bilingual_idempotent_and_preserves_admin_edits():
     assert ChangelogEntry.objects.count() == 12
     latest.refresh_from_db()
     assert latest.title_fr == "Titre modifié par l’administrateur"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_stable_release_notes_preserve_edits_and_do_not_invent_older_versions():
+    migration = import_module("ws.migrations.0006_release_1_0_changelog")
+    older = entry(date=migration.RELEASE_DATE - timedelta(days=1))
+    current = entry(date=migration.RELEASE_DATE, title_fr="Titre conservé")
+    with connection.schema_editor(atomic=False) as editor:
+        migration.publish_release_notes(apps, editor)
+        migration.publish_release_notes(apps, editor)
+    current.refresh_from_db()
+    older.refresh_from_db()
+    assert current.version == "1.0.0"
+    assert older.version == ""
+    assert current.title_fr == "Titre conservé"
+    for language, additions in migration.CHANGES.items():
+        lines = getattr(current, f"changes_{language}").splitlines()
+        assert all(lines.count(line) == 1 for line in additions)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_stable_release_notes_do_not_overwrite_another_numbered_release():
+    migration = import_module("ws.migrations.0006_release_1_0_changelog")
+    current = entry(date=migration.RELEASE_DATE, version="2.0.0")
+    with connection.schema_editor(atomic=False) as editor:
+        migration.publish_release_notes(apps, editor)
+    current.refresh_from_db()
+    assert current.version == "2.0.0"
+    assert "PDF" not in current.changes_fr
