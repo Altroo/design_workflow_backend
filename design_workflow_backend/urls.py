@@ -21,7 +21,9 @@ from django.http import JsonResponse
 from django.urls import include, path, re_path
 from django.views.static import serve
 
-from ws.views import GetMaintenanceView
+from ws.views import ChangelogView, GetMaintenanceView
+from design_workflow.card_images import THUMBNAIL_PATH
+from design_workflow.media import serve_card_thumbnail
 
 
 def health_check(request):
@@ -57,12 +59,14 @@ urlpatterns = [
     path("api/design-workflow/", include("design_workflow.urls")),
     # Maintenance state (unauthenticated)
     path("api/ws/maintenance/", GetMaintenanceView.as_view(), name="ws-maintenance"),
+    path("api/ws/changelog/", ChangelogView.as_view(), name="ws-changelog"),
     # Admin panel (obscured path for security)
     path("gestion-interne-gf62/", admin.site.urls),
 ]
 
 # Always serve static/media — nginx proxies these to Django
 urlpatterns += [
+    re_path(rf"^media/(?P<path>{THUMBNAIL_PATH})$", serve_card_thumbnail),
     re_path(r"^media/(?P<path>.*)$", serve, {"document_root": settings.MEDIA_ROOT}),
     re_path(r"^static/(?P<path>.*)$", serve, {"document_root": settings.STATIC_ROOT}),
 ]

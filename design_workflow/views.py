@@ -6,7 +6,6 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.core.files.base import ContentFile
 from django.db import transaction
 from django.db.models import Count, Max, Q, Sum
 from django.db.models.functions import TruncDate
@@ -18,6 +17,11 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 
 from .filters import TaskFilter
+from .card_images import (
+    delete_replaced_cover_after_commit,
+    make_card_thumbnail,
+    save_card_thumbnail,
+)
 from .models import (
     ArtifactApprovalState,
     ChatMessage,
@@ -126,23 +130,37 @@ def parse_bool(value: str | None) -> bool | None:
 def average(values: list[float]) -> float:
     if not values:
         return 0
-    return round(sum(values) / len(values), 1)
+    return sum(values) / len(values)
 
 
 def days_between(start, end) -> float:
     if not start or not end or end < start:
         return 0
-    return round((end - start).total_seconds() / 86400, 1)
+    return (end - start).total_seconds() / 86400
 
 
 def first_status_time(task: Task, target_status: str):
-    for activity in task.activities.all().order_by("created_at"):
+    for activity in sorted(task.activities.all(), key=lambda item: item.created_at):
         metadata = activity.metadata or {}
         if (
-            metadata.get("status") == target_status
-            or metadata.get("next") == target_status
+            activity.action_type == TaskActivityType.STATUS_CHANGED
+            and metadata.get("next", metadata.get("status")) == target_status
         ):
             return activity.created_at
+    return None
+
+
+def last_status_time(task: Task, target_status: str):
+    for activity in sorted(
+        task.activities.all(), key=lambda item: item.created_at, reverse=True
+    ):
+        metadata = activity.metadata or {}
+        if activity.action_type == TaskActivityType.STATUS_CHANGED:
+            return (
+                activity.created_at
+                if metadata.get("next", metadata.get("status")) == target_status
+                else None
+            )
     return None
 
 
@@ -1540,16 +1558,23 @@ class TaskCoverImageView(APIView):
                 {"name": ["Ensure this label has no more than 255 characters."]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        task.cover_image = cover_image
+        try:
+            thumbnail = make_card_thumbnail(cover_image)
+        except ValueError as exc:
+            return Response(
+                {"cover_image": [str(exc)]}, status=status.HTTP_400_BAD_REQUEST
+            )
         task.cover_image_label = cover_image_label
         task.updated_by = request.user
-        task.save(
+        save_card_thumbnail(
+            task,
+            thumbnail,
             update_fields=[
                 "cover_image",
                 "cover_image_label",
                 "updated_by",
                 "updated_at",
-            ]
+            ],
         )
         record_task_activity(
             task,
@@ -1571,8 +1596,8 @@ class TaskCoverImageView(APIView):
         task = get_task_or_404(pk, request.user)
         if not can_mutate_task(request.user, task):
             return Response(status=status.HTTP_403_FORBIDDEN)
-        if task.cover_image:
-            task.cover_image.delete(save=False)
+        previous_name = task.cover_image.name
+        storage = task.cover_image.storage
         task.cover_image = None
         task.cover_image_label = ""
         task.updated_by = request.user
@@ -1584,6 +1609,7 @@ class TaskCoverImageView(APIView):
                 "updated_at",
             ]
         )
+        delete_replaced_cover_after_commit(storage, previous_name)
         record_task_activity(
             task,
             request.user,
@@ -1909,22 +1935,24 @@ class TaskAttachmentDetailView(APIView):
                 {"attachment": ["Only image attachments can be used as cover images."]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        attachment.file.open("rb")
         try:
-            task.cover_image.save(
-                attachment.name, ContentFile(attachment.file.read()), save=False
+            with attachment.file.open("rb") as source:
+                thumbnail = make_card_thumbnail(source)
+        except ValueError as exc:
+            return Response(
+                {"attachment": [str(exc)]}, status=status.HTTP_400_BAD_REQUEST
             )
-        finally:
-            attachment.file.close()
         task.updated_by = request.user
         task.cover_image_label = attachment.name
-        task.save(
+        save_card_thumbnail(
+            task,
+            thumbnail,
             update_fields=[
                 "cover_image",
                 "cover_image_label",
                 "updated_by",
                 "updated_at",
-            ]
+            ],
         )
         record_task_activity(
             task,
@@ -2514,17 +2542,22 @@ class WorkflowAnalyticsReportView(APIView):
 
         for task in tasks:
             status_counts[task.status] = status_counts.get(task.status, 0) + 1
-            completed_at = task.completed_at
-            if not completed_at and task.status == TaskStatus.DONE:
-                completed_at = task.updated_at
-            if completed_at:
+            completed_at = (
+                last_status_time(task, TaskStatus.DONE) or task.completed_at
+                if task.status == TaskStatus.DONE
+                else None
+            )
+            if completed_at and task.created_at <= completed_at <= now:
                 lead_times.append(days_between(task.created_at, completed_at))
                 cycle_started_at = (
                     first_status_time(task, TaskStatus.IN_PROGRESS)
                     or task.work_started_at
-                    or task.created_at
                 )
-                cycle_times.append(days_between(cycle_started_at, completed_at))
+                if (
+                    cycle_started_at
+                    and task.created_at <= cycle_started_at <= completed_at
+                ):
+                    cycle_times.append(days_between(cycle_started_at, completed_at))
             if task.status == TaskStatus.BLOCKED:
                 blocked_started_at = (
                     first_status_time(task, TaskStatus.BLOCKED)
@@ -2538,13 +2571,14 @@ class WorkflowAnalyticsReportView(APIView):
         unresolved_reviews = [
             task
             for task in tasks
-            if task.review_state
-            in {TaskReviewState.NEEDS_REVIEW, TaskReviewState.CHANGES_REQUESTED}
+            if task.status != TaskStatus.DONE
+            and task.review_state == TaskReviewState.NEEDS_REVIEW
         ]
         pending_review_minutes = [
             max(0, int((now - task.review_requested_at).total_seconds() // 60))
             for task in unresolved_reviews
             if task.review_requested_at
+            and task.created_at <= task.review_requested_at <= now
         ]
         report_user = request.query_params.get("user")
         total_actual = (
@@ -2613,24 +2647,33 @@ class WorkflowAnalyticsReportView(APIView):
                         "overdue_tasks": 0,
                         "remaining_minutes": 0,
                         "capacity_minutes": WORK_WEEK_MINUTES,
+                        "unestimated_tasks": 0,
+                        "exhausted_estimate_tasks": 0,
                     },
                 )
                 row["open_tasks"] += 1
+                if not task.estimated_minutes:
+                    row["unestimated_tasks"] += 1
+                elif personal_minutes >= task.estimated_minutes:
+                    row["exhausted_estimate_tasks"] += 1
                 row["remaining_minutes"] += remaining
                 if task.is_overdue:
                     row["overdue_tasks"] += 1
 
         capacity = []
         for row in remaining_by_user.values():
+            incomplete_estimate = (
+                row["unestimated_tasks"] > 0 or row["exhausted_estimate_tasks"] > 0
+            )
             load_percent = (
                 round((row["remaining_minutes"] / row["capacity_minutes"]) * 100, 1)
-                if row["capacity_minutes"]
-                else 0
+                if not incomplete_estimate
+                else None
             )
             forecast_days = (
                 round(row["remaining_minutes"] / WORK_DAY_MINUTES, 1)
-                if row["remaining_minutes"]
-                else 0
+                if not incomplete_estimate
+                else None
             )
             capacity.append(
                 row
@@ -2639,8 +2682,14 @@ class WorkflowAnalyticsReportView(APIView):
                     "forecast_days": forecast_days,
                     "risk": (
                         "high"
-                        if load_percent >= 100 or row["overdue_tasks"]
-                        else "medium" if load_percent >= 75 else "normal"
+                        if row["exhausted_estimate_tasks"]
+                        or row["overdue_tasks"]
+                        or row["remaining_minutes"] >= row["capacity_minutes"]
+                        else (
+                            "unknown"
+                            if row["unestimated_tasks"]
+                            else "medium" if (load_percent or 0) >= 75 else "normal"
+                        )
                     ),
                 }
             )
@@ -2648,7 +2697,9 @@ class WorkflowAnalyticsReportView(APIView):
         forecast = sorted(
             capacity,
             key=lambda capacity_row: (
-                -capacity_row["load_percent"],
+                -capacity_row["exhausted_estimate_tasks"],
+                -capacity_row["unestimated_tasks"],
+                -(capacity_row["load_percent"] or 0),
                 -capacity_row["overdue_tasks"],
                 capacity_row["user"]["email"],
             ),
@@ -2656,29 +2707,42 @@ class WorkflowAnalyticsReportView(APIView):
         payload = {
             "generated_at": now,
             "tasks_sampled": len(tasks),
-            "lead_time_days": average(lead_times),
-            "cycle_time_days": average(cycle_times),
+            "lead_time_days": average(lead_times) if lead_times else None,
+            "cycle_time_days": average(cycle_times) if cycle_times else None,
+            "lead_time_sample_size": len(lead_times),
+            "cycle_time_sample_size": len(cycle_times),
             "blocked_tasks": status_counts.get(TaskStatus.BLOCKED, 0),
             "blocked_time_minutes": blocked_minutes,
             "review_bottlenecks": {
                 "needs_review": sum(
                     1
                     for task in tasks
-                    if task.review_state == TaskReviewState.NEEDS_REVIEW
+                    if task.status != TaskStatus.DONE
+                    and task.review_state == TaskReviewState.NEEDS_REVIEW
+                ),
+                "in_review_without_request": sum(
+                    1
+                    for task in tasks
+                    if task.status == TaskStatus.IN_REVIEW
+                    and task.review_state == TaskReviewState.NOT_SUBMITTED
                 ),
                 "changes_requested": sum(
                     1
                     for task in tasks
-                    if task.review_state == TaskReviewState.CHANGES_REQUESTED
+                    if task.status != TaskStatus.DONE
+                    and task.review_state == TaskReviewState.CHANGES_REQUESTED
                 ),
                 "approved": sum(
                     1 for task in tasks if task.review_state == TaskReviewState.APPROVED
                 ),
-                "pending_review_minutes": sum(pending_review_minutes),
+                "pending_review_minutes": (
+                    sum(pending_review_minutes) if pending_review_minutes else None
+                ),
+                "wait_sample_size": len(pending_review_minutes),
                 "average_pending_review_minutes": (
                     int(sum(pending_review_minutes) / len(pending_review_minutes))
                     if pending_review_minutes
-                    else 0
+                    else None
                 ),
             },
             "estimate_vs_actual": {

@@ -66,6 +66,18 @@ WebSocket transports. Daphne's `runserver` buffers request bodies before Django
 processes them and is not suitable for the 10 GiB attachment limit. See
 [upload deployment notes](deploy/nginx/README.md).
 
+## Admin static assets
+
+`collectstatic` generates `staticfiles/` from the installed Django packages.
+WhiteNoise serves compressed, content-hashed URLs using `STORAGES["staticfiles"]`.
+The Docker build collects these assets before the app starts; do not bind-mount
+an older host static directory over them. Nginx forwards `/static/` to the app.
+The legacy checked-in `static/` directory is not a static source or output.
+
+After a Django upgrade, rebuild the image and verify the admin stylesheet URLs
+contain hashes and return HTTP 200. The collected CSS must match the installed
+Django version, not merely exist on disk.
+
 ## Tests
 
 ```bash

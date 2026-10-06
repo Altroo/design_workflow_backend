@@ -9,7 +9,29 @@ load it at the global HTTP level.
 The app accepts original attachments up to 10 GiB per file. Chat selections
 totaling over 10 GiB must be sent in separate messages. The proxy permits
 11 GiB to accommodate multipart overhead. Card
-covers retain their separate 8 MiB limit and frontend image conversion.
+covers retain their separate 8 MiB incoming limit. The browser reduces them
+before upload; Django validates and stores only a WebP thumbnail (longest edge
+960 px, at most 160 KiB), never the full-size card-image upload. Using an
+attachment as a cover creates a separate thumbnail and preserves the attachment.
+
+UUID thumbnail URLs under `/media/design_workflow/task_covers/` have private
+browser caching for one year. Replacements always get new URLs. Keep the
+proxy forwarding Django's `Cache-Control` and `Last-Modified` headers; the
+frontend additionally uses Next.js Image optimization and its responsive-image
+cache in production, as in Facturation. Development serves the thumbnail directly.
+
+Existing covers need a one-time conversion after deploying the backend:
+
+```sh
+python manage.py optimize_card_images
+python manage.py optimize_card_images --apply
+```
+
+The first command is a dry run. `--apply` permanently removes each old cover
+only after its thumbnail is saved and the database transaction commits. It
+does not touch attachments, invalid images, or files still used by another card.
+Use `--task-id ID` to limit either command to one card. Re-running skips already
+optimized images. No database schema migration is needed.
 
 Validate with `nginx -t` before reloading nginx. Keep this proxy limit aligned
 with `MAX_ATTACHMENT_UPLOAD_SIZE` and the frontend attachment limit.

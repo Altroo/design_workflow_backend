@@ -673,8 +673,10 @@ class TimeReportRowSerializer(serializers.Serializer):
 class WorkflowAnalyticsSerializer(serializers.Serializer):
     generated_at = serializers.DateTimeField()
     tasks_sampled = serializers.IntegerField()
-    lead_time_days = serializers.FloatField()
-    cycle_time_days = serializers.FloatField()
+    lead_time_days = serializers.FloatField(allow_null=True)
+    cycle_time_days = serializers.FloatField(allow_null=True)
+    lead_time_sample_size = serializers.IntegerField()
+    cycle_time_sample_size = serializers.IntegerField()
     blocked_tasks = serializers.IntegerField()
     blocked_time_minutes = serializers.IntegerField()
     review_bottlenecks = serializers.DictField()

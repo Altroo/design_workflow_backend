@@ -58,7 +58,12 @@ MIDDLEWARE = [
     "axes.middleware.AxesMiddleware",
 ]
 
-STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"
+    },
+}
 
 ROOT_URLCONF = "design_workflow_backend.urls"
 
@@ -135,8 +140,10 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "/static/"
-STATIC_PATH = "static"
-STATIC_ROOT = os.path.join(BASE_DIR, "static")
+STATIC_PATH = "static"  # Source fonts used by avatar generation.
+# Keep generated assets separate from the legacy checked-in static directory.
+# A host bind mount must not replace the assets collected in the Docker image.
+STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_DIRS = ()
 MEDIA_ROOT = os.path.join(BASE_DIR, "media")
 MEDIA_URL = "/media/"
@@ -146,7 +153,7 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 20971520  # 20MB
 MAX_BASE64_IMAGE_SIZE = 15 * 1024 * 1024  # 15MB base64
 MAX_TASK_COVER_IMAGE_SIZE = (
     8 * 1024 * 1024
-)  # Card images are reduced by the frontend before upload.
+)  # Browser upload guard. The backend stores only a <=160 KiB, <=960 px WebP.
 MAX_ATTACHMENT_UPLOAD_SIZE = 10 * 1024 * 1024 * 1024  # 10 GiB per original file.
 MAX_ATTACHMENT_REQUEST_SIZE = (
     MAX_ATTACHMENT_UPLOAD_SIZE  # Send larger chat batches separately.
