@@ -232,3 +232,70 @@ def test_release_history_preserves_admin_text_and_does_not_announce_app_update()
     assert current.title_fr == "Travail partagé"
     assert state.maintenance is True
     assert state.version == "0.2.0"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_complete_history_is_bilingual_ordered_idempotent_and_covers_features():
+    migration = import_module("ws.migrations.0008_complete_release_notes")
+    with connection.schema_editor(atomic=False) as editor:
+        import_module("ws.migrations.0004_seed_changelog").seed_changelog(apps, editor)
+        import_module("ws.migrations.0006_release_1_0_changelog").publish_release_notes(
+            apps, editor
+        )
+        import_module(
+            "ws.migrations.0007_correct_release_history"
+        ).correct_release_history(apps, editor)
+        migration.complete_release_notes(apps, editor)
+        first = list(ChangelogEntry.objects.values())
+        migration.complete_release_notes(apps, editor)
+    assert list(ChangelogEntry.objects.values()) == first
+    assert len(first) == 19
+    versions = []
+    bullet_count = 0
+    for saved in ChangelogEntry.objects.order_by("date"):
+        saved.full_clean()
+        french = saved.changes_fr.splitlines()
+        english = saved.changes_en.splitlines()
+        assert len(french) == len(english)
+        assert len(set(french)) == len(french)
+        assert len(set(english)) == len(english)
+        bullet_count += len(french)
+        versions.append(tuple(map(int, saved.version.split("."))))
+    assert versions == sorted(set(versions))
+    assert bullet_count == 101
+    assert ChangelogEntry.objects.get(date="2026-09-16").version == "1.0.0"
+    current = ChangelogEntry.objects.get(date="2026-10-07")
+    assert current.version == "1.4.0"
+    assert "Renommez une pièce jointe" in current.changes_fr
+    assert "Attachments stay unchanged" in current.changes_en
+    assert "PDF" in ChangelogEntry.objects.get(date="2026-10-06").changes_fr
+    assert "9 h–13 h" in ChangelogEntry.objects.get(date="2026-09-15").changes_fr
+
+
+@pytest.mark.django_db(transaction=True)
+def test_complete_history_preserves_edits_drafts_and_app_version():
+    from .models import WsMaintenanceState
+
+    migration = import_module("ws.migrations.0008_complete_release_notes")
+    state = WsMaintenanceState.objects.create(maintenance=False, version="1.3.1")
+    edited = entry(
+        date="2026-10-07",
+        version="1.3.1",
+        title_fr="Titre personnel",
+        is_published=False,
+    )
+    historical = entry(date="2026-05-20", version="0.3.5", title_fr="Ne pas remplacer")
+    original = edited.changes_fr
+    with connection.schema_editor(atomic=False) as editor:
+        migration.complete_release_notes(apps, editor)
+    edited.refresh_from_db()
+    historical.refresh_from_db()
+    state.refresh_from_db()
+    assert edited.version == "1.4.0"
+    assert edited.title_fr == "Titre personnel"
+    assert edited.changes_fr.startswith(original + "\n")
+    assert not edited.is_published
+    assert historical.version == "0.3.5"
+    assert historical.title_fr == "Ne pas remplacer"
+    assert state.version == "1.3.1"
+    assert not state.maintenance

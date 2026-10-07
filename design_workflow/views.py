@@ -81,6 +81,7 @@ from .serializers import (
     SavedViewSerializer,
     TaskArchiveSerializer,
     TaskArtifactVersionSerializer,
+    TaskAttachmentRenameSerializer,
     TaskAttachmentSerializer,
     TaskCardSerializer,
     TaskChecklistItemSerializer,
@@ -1916,6 +1917,36 @@ class TaskAttachmentsView(APIView):
 
 class TaskAttachmentDetailView(APIView):
     permission_classes = (permissions.IsAuthenticated,)
+
+    @transaction.atomic
+    def patch(self, request, pk: int, attachment_id: int):
+        task = get_task_or_404(pk, request.user)
+        if not can_mutate_task(request.user, task):
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        attachment = get_object_or_404(
+            task.attachments.select_for_update(), pk=attachment_id
+        )
+        serializer = TaskAttachmentRenameSerializer(attachment, data=request.data)
+        serializer.is_valid(raise_exception=True)
+        previous_name = attachment.name
+        if serializer.validated_data["name"] != previous_name:
+            attachment.name = serializer.validated_data["name"]
+            attachment.save(update_fields=["name", "updated_at"])
+            record_task_activity(
+                task,
+                request.user,
+                TaskActivityType.UPDATED,
+                {
+                    "attachment_renamed": attachment.name,
+                    "previous_name": previous_name,
+                    "attachment_id": attachment.id,
+                },
+            )
+            broadcast_task_event(task, "attachment_renamed")
+        return Response(
+            TaskAttachmentSerializer(attachment, context={"request": request}).data,
+            status=status.HTTP_200_OK,
+        )
 
     def post(self, request, pk: int, attachment_id: int):
         task = get_task_or_404(pk, request.user)

@@ -11,7 +11,9 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 THUMBNAIL_MAX_EDGE = 960
 THUMBNAIL_MAX_BYTES = 160 * 1024
-MAX_SOURCE_PIXELS = 40_000_000
+# Existing designer renders include 7360 x 5520 images (40.6 MP). Keep a
+# bounded decode budget while allowing those originals to become thumbnails.
+MAX_SOURCE_PIXELS = 50_000_000
 THUMBNAIL_PATH = r"design_workflow/task_covers/\d{4}/\d{2}/thumb_[0-9a-f]{32}\.webp"
 
 
@@ -57,7 +59,7 @@ def make_card_thumbnail(source):
         Image.DecompressionBombWarning,
     ) as exc:
         raise ValueError(
-            "Choose a valid, supported image with fewer than 40 million pixels."
+            "Choose a valid, supported image with no more than 50 million pixels."
         ) from exc
 
 

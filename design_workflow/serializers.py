@@ -233,6 +233,16 @@ class TaskChecklistSerializer(serializers.ModelSerializer):
         )
 
 
+class TaskAttachmentRenameSerializer(serializers.ModelSerializer):
+    name = serializers.CharField(
+        max_length=255, allow_blank=False, trim_whitespace=True
+    )
+
+    class Meta:
+        model = TaskAttachment
+        fields = ("name",)
+
+
 class TaskAttachmentSerializer(serializers.ModelSerializer):
     uploaded_by = UserSummarySerializer(read_only=True)
     file_url = serializers.SerializerMethodField()
