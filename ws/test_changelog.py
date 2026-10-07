@@ -299,3 +299,26 @@ def test_complete_history_preserves_edits_drafts_and_app_version():
     assert historical.title_fr == "Ne pas remplacer"
     assert state.version == "1.3.1"
     assert not state.maintenance
+
+
+@pytest.mark.django_db(transaction=True)
+def test_small_followup_uses_patch_without_republishing_version_or_changing_text():
+    from .models import WsMaintenanceState
+
+    migration = import_module("ws.migrations.0009_use_patch_release_version")
+    state = WsMaintenanceState.objects.create(maintenance=False, version="1.3.1")
+    current = entry(date="2026-10-07", version="1.4.0", is_published=False)
+    other = entry(date="2026-10-06", version="1.4.0")
+    original_text = current.changes_fr
+    with connection.schema_editor(atomic=False) as editor:
+        migration.use_patch_release_version(apps, editor)
+        migration.use_patch_release_version(apps, editor)
+    current.refresh_from_db()
+    other.refresh_from_db()
+    state.refresh_from_db()
+    assert current.version == "1.3.2"
+    assert current.changes_fr == original_text
+    assert not current.is_published
+    assert other.version == "1.4.0"
+    assert state.version == "1.3.1"
+    assert not state.maintenance
