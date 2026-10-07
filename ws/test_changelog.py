@@ -180,3 +180,55 @@ def test_stable_release_notes_do_not_overwrite_another_numbered_release():
     current.refresh_from_db()
     assert current.version == "2.0.0"
     assert "PDF" not in current.changes_fr
+
+
+@pytest.mark.django_db(transaction=True)
+def test_release_history_uses_september_baseline_and_increases_chronologically():
+    seed = import_module("ws.migrations.0004_seed_changelog")
+    previous = import_module("ws.migrations.0006_release_1_0_changelog")
+    migration = import_module("ws.migrations.0007_correct_release_history")
+    with connection.schema_editor(atomic=False) as editor:
+        seed.seed_changelog(apps, editor)
+        previous.publish_release_notes(apps, editor)
+        migration.correct_release_history(apps, editor)
+        migration.correct_release_history(apps, editor)
+
+    assert ChangelogEntry.objects.count() == 13
+    assert ChangelogEntry.objects.get(date="2026-09-16").version == "1.0.0"
+    assert ChangelogEntry.objects.get(date="2026-10-06").version == "1.3.0"
+    assert ChangelogEntry.objects.get(date="2026-10-07").version == "1.3.1"
+    versions = []
+    for saved in ChangelogEntry.objects.order_by("date"):
+        saved.full_clean()
+        assert len(saved.changes_fr.splitlines()) == len(saved.changes_en.splitlines())
+        versions.append(tuple(map(int, saved.version.split("."))))
+    assert versions == sorted(set(versions))
+    assert all(
+        saved.version.startswith("0.")
+        for saved in ChangelogEntry.objects.filter(date__lt="2026-09-16")
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_release_history_preserves_admin_text_and_does_not_announce_app_update():
+    from .models import WsMaintenanceState
+
+    migration = import_module("ws.migrations.0007_correct_release_history")
+    state = WsMaintenanceState.objects.create(maintenance=True, version="0.2.0")
+    edited = entry(date="2026-09-16", title_fr="Titre conservé")
+    numbered = entry(date="2026-10-05", version="1.2.3")
+    current = entry(date=migration.RELEASE_DATE, version="1.3.1", is_published=False)
+    with connection.schema_editor(atomic=False) as editor:
+        migration.correct_release_history(apps, editor)
+    edited.refresh_from_db()
+    numbered.refresh_from_db()
+    current.refresh_from_db()
+    state.refresh_from_db()
+    assert edited.version == "1.0.0"
+    assert edited.title_fr == "Titre conservé"
+    assert edited.changes_fr == "  Une nouveauté.\n\nUne amélioration. "
+    assert numbered.version == "1.2.3"
+    assert not current.is_published
+    assert current.title_fr == "Travail partagé"
+    assert state.maintenance is True
+    assert state.version == "0.2.0"
