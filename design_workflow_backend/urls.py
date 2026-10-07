@@ -23,6 +23,7 @@ from django.views.static import serve
 
 from ws.views import ChangelogView, GetMaintenanceView
 from design_workflow.card_images import THUMBNAIL_PATH
+from design_workflow.attachment_images import ATTACHMENT_THUMBNAIL_PATH
 from design_workflow.media import serve_card_thumbnail
 
 
@@ -67,6 +68,7 @@ urlpatterns = [
 # Always serve static/media — nginx proxies these to Django
 urlpatterns += [
     re_path(rf"^media/(?P<path>{THUMBNAIL_PATH})$", serve_card_thumbnail),
+    re_path(rf"^media/(?P<path>{ATTACHMENT_THUMBNAIL_PATH})$", serve_card_thumbnail),
     re_path(r"^media/(?P<path>.*)$", serve, {"document_root": settings.MEDIA_ROOT}),
     re_path(r"^static/(?P<path>.*)$", serve, {"document_root": settings.STATIC_ROOT}),
 ]

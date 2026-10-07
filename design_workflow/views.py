@@ -17,6 +17,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 
 from .filters import TaskFilter
+from .attachment_images import create_attachment_thumbnail
 from .card_images import (
     delete_replaced_cover_after_commit,
     make_card_thumbnail,
@@ -1900,6 +1901,7 @@ class TaskAttachmentsView(APIView):
             mime_type=getattr(upload, "content_type", "") or "",
             size=getattr(upload, "size", 0) or 0,
         )
+        create_attachment_thumbnail(attachment)
         record_task_activity(
             task,
             request.user,
@@ -1956,9 +1958,15 @@ class TaskAttachmentDetailView(APIView):
             attachment = task.attachments.get(pk=attachment_id)
         except TaskAttachment.DoesNotExist as exc:
             raise Http404 from exc
-        is_image_attachment = attachment.mime_type.startswith("image/") or bool(
-            re.search(
-                r"\.(avif|bmp|gif|jpe?g|png|svg|webp)$", attachment.name, re.IGNORECASE
+        is_image_attachment = (
+            bool(attachment.thumbnail)
+            or attachment.mime_type.startswith("image/")
+            or bool(
+                re.search(
+                    r"\.(avif|bmp|gif|jpe?g|png|svg|webp)$",
+                    attachment.file.name,
+                    re.IGNORECASE,
+                )
             )
         )
         if not is_image_attachment:

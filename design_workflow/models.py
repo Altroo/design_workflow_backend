@@ -386,6 +386,9 @@ class TaskAttachment(TimestampedModel):
         related_name="uploaded_task_attachments",
     )
     file = models.FileField(upload_to="design_workflow/task_attachments/%Y/%m/")
+    thumbnail = models.ImageField(
+        upload_to="design_workflow/attachment_thumbnails/%Y/%m/", blank=True
+    )
     name = models.CharField(max_length=255)
     mime_type = models.CharField(max_length=120, blank=True)
     size = models.PositiveBigIntegerField(default=0)

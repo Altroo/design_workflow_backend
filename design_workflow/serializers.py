@@ -246,6 +246,7 @@ class TaskAttachmentRenameSerializer(serializers.ModelSerializer):
 class TaskAttachmentSerializer(serializers.ModelSerializer):
     uploaded_by = UserSummarySerializer(read_only=True)
     file_url = serializers.SerializerMethodField()
+    thumbnail_url = serializers.SerializerMethodField()
     annotation_count = serializers.SerializerMethodField()
 
     class Meta:
@@ -255,6 +256,7 @@ class TaskAttachmentSerializer(serializers.ModelSerializer):
             "uploaded_by",
             "file",
             "file_url",
+            "thumbnail_url",
             "name",
             "mime_type",
             "size",
@@ -273,6 +275,13 @@ class TaskAttachmentSerializer(serializers.ModelSerializer):
 
     def get_annotation_count(self, obj):
         return obj.annotations.count()
+
+    def get_thumbnail_url(self, obj):
+        if not obj.thumbnail:
+            return None
+        request = self.context.get("request")
+        url = obj.thumbnail.url
+        return request.build_absolute_uri(url) if request is not None else url
 
 
 class TaskCardSerializer(serializers.ModelSerializer):
@@ -348,13 +357,13 @@ class TaskCardSerializer(serializers.ModelSerializer):
             (
                 attachment
                 for attachment in obj.attachments.all()
-                if attachment.mime_type.startswith("image/")
+                if attachment.thumbnail
             ),
             None,
         )
-        if first_image is None or not first_image.file:
+        if first_image is None:
             return None
-        url = first_image.file.url
+        url = first_image.thumbnail.url
         return request.build_absolute_uri(url) if request is not None else url
 
     def get_labels(self, obj):

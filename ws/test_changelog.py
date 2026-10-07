@@ -322,3 +322,32 @@ def test_small_followup_uses_patch_without_republishing_version_or_changing_text
     assert other.version == "1.4.0"
     assert state.version == "1.3.1"
     assert not state.maintenance
+
+
+@pytest.mark.django_db(transaction=True)
+def test_attachment_preview_release_appends_bilingual_notes_without_publishing_update():
+    from .models import WsMaintenanceState
+
+    migration = import_module("ws.migrations.0010_attachment_preview_notes")
+    state = WsMaintenanceState.objects.create(maintenance=False, version="1.3.2")
+    current = entry(
+        date="2026-10-07",
+        version="1.3.2",
+        title_fr="Titre conservé",
+        is_published=False,
+    )
+    with connection.schema_editor(atomic=False) as editor:
+        migration.add_attachment_preview_notes(apps, editor)
+        migration.add_attachment_preview_notes(apps, editor)
+    current.refresh_from_db()
+    state.refresh_from_db()
+    assert current.version == "1.3.3"
+    assert current.title_fr == "Titre conservé"
+    assert not current.is_published
+    for language, additions in migration.CHANGES.items():
+        assert all(
+            getattr(current, f"changes_{language}").splitlines().count(line) == 1
+            for line in additions
+        )
+    assert state.version == "1.3.2"
+    assert not state.maintenance

@@ -70,13 +70,16 @@ def test_orientation_is_applied_without_upscaling_small_images():
         assert not image.getexif()
 
 
-def test_existing_40_megapixel_designer_render_can_be_converted():
-    source = io.BytesIO(image_bytes((7360, 5520), mode="RGBA"))
+@pytest.mark.parametrize(
+    "size,expected", [((7360, 5520), (960, 720)), ((7680, 7680), (960, 960))]
+)
+def test_existing_large_designer_render_can_be_converted(size, expected):
+    source = io.BytesIO(image_bytes(size, mode="RGBA"))
     thumbnail = make_card_thumbnail(source)
     assert thumbnail.size <= THUMBNAIL_MAX_BYTES
     with Image.open(thumbnail) as image:
         assert image.format == "WEBP"
-        assert image.size == (960, 720)
+        assert image.size == expected
         assert "A" in image.getbands()
 
 
