@@ -45,10 +45,11 @@ Design Workflow tools, native permissions and bilingual reviewed help documents.
    `deploy/nginx/chat-ai.inc` in the shared proxy's `conf.d` directory and include
    it only inside the Design Workflow API HTTPS server block. Validate nginx
    before reloading; no other application's block needs to change.
-6. Draft bilingual notes are in `docs/assistant-release-notes.json`. Version
-   numbering, changelog publication and the Maintenance version announcement
-   are coordinated separately with the agent handling the app-update feature.
-   This feature deployment does not change or publish an app version.
+6. The matching frontend bundles version `1.5.0`. Draft bilingual notes are in
+   `docs/assistant-release-notes.json`. Changelog publication and the Maintenance
+   version announcement are coordinated separately with the agent handling the
+   app-update feature. Do not announce that server version until the matching
+   frontend is deployed and the coordinated update checks have passed.
 
 `chat_ai.purge_history` runs daily via the existing Celery Beat schedule. It
 removes expired conversations and proposals but retains confirmed-write audits.
