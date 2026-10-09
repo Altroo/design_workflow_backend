@@ -114,6 +114,40 @@ def test_feature_off_and_authentication(env, settings):
     assert client(env.owner).get("/api/chat-ai/capabilities/").status_code == 503
 
 
+@pytest.mark.parametrize(
+    "email,expected",
+    [
+        ("mahmoud@casadilusso.ma", True),
+        ("khaoula@casadilusso.ma", True),
+        ("med.amine@casadilusso.ma", True),
+        ("maissam@casadilusso.ma", True),
+        ("maryam@casadilusso.ma", True),
+        (" MARYAM@CASADILUSSO.MA ", True),
+        ("ibtissam@elbouazzatiholding.ma", False),
+        ("support@elbouazzatiholding.ma", False),
+        ("other@casadilusso.ma", False),
+    ],
+)
+def test_idle_meme_exact_account_allowlist(env, email, expected):
+    CustomUser.objects.filter(pk=env.owner.pk).update(email=email)
+    response = client(env.owner).get("/api/chat-ai/capabilities/")
+    assert response.status_code == 200
+    assert response.data["idle_meme_enabled"] is expected
+
+
+def test_idle_meme_does_not_grant_admins_an_exception_or_bypass_access(env):
+    assert (
+        client(env.admin).get("/api/chat-ai/capabilities/").data["idle_meme_enabled"]
+        is False
+    )
+    CustomUser.objects.filter(pk=env.owner.pk).update(
+        email="maryam@casadilusso.ma", can_view=False
+    )
+    assert client(env.owner).get("/api/chat-ai/capabilities/").status_code == 403
+    CustomUser.objects.filter(pk=env.owner.pk).update(can_view=True, is_active=False)
+    assert client(env.owner).get("/api/chat-ai/capabilities/").status_code == 401
+
+
 def test_capabilities_and_strict_workspace(env):
     for user, report in [(env.owner, False), (env.manager, False), (env.admin, True)]:
         api = client(user)
