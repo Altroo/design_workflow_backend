@@ -7,18 +7,33 @@ Design Workflow tools, native permissions and bilingual reviewed help documents.
 ## Features and boundaries
 
 - French/English questions, suggested starters and optional shortcuts.
+- Standalone greetings, thanks and goodbyes get immediate bilingual replies,
+  without model inference. Mixed messages still go through the normal planner.
+  Unsupported requests no longer incorrectly imply an access denial.
 - Project/task search and private-chat-aware message search, at most 10 results.
 - Native-page links, follow-up references and current-card context.
-- Task counts; manager-only recorded/live person-time from `TimeReportView`.
+- Task counts; admin-only recorded/live person-time from `TimeReportView`.
   One displayed workday equals 480 minutes. No new time calculation engine.
-- Conversation history (30 days), refreshed results, cancellation and feedback.
+- Conversation history (30 days), refreshed results and cancellation.
+- Suggested questions send immediately. Optional shortcuts show a description,
+  example and keyboard autocomplete; admin-only shortcuts stay permission-gated.
+- Assistant replies and streaming text use a robot reply bubble in both themes.
+  The assistant name is screen-reader-only in the header and replies; there are
+  no visible assistant labels or like/dislike controls.
 - Proposed title/name, description, priority and date edits, plus archiving.
   Every write needs the explicit confirmation button. Previews expire after five
   minutes; native permissions, record fingerprints and ownership are rechecked.
   Native views retain activity, notifications, WebSocket and work-session effects.
 - Projects/tasks stay readable across the workspace, matching native GETs.
-  Only permitted owners/collaborators/assignees can change them. Managers cannot
+  The assistant also enforces the account's read/create/edit/delete flags, with
+  the existing staff/superuser override. Edit requires `can_edit`; archive requires
+  `can_delete`. Creation help is suggested only with `can_create`; the assistant
+  does not create or permanently delete records. Flags are rechecked at confirmation
+  and permission changes invalidate saved assistant context.
+  Only permitted owners/collaborators/assignees can change records. Managers cannot
   read somebody else's private chat merely because they are managers.
+- The native Rapports page stays available to managers; only assistant time-report
+  output and its suggestions are admin-only.
 - No automatic approval, reassignment, membership edits, bulk writes or deletion.
   Those workflows remain in the existing card/project UI.
 - The model receives bounded user prompts and typed context, not complete chat

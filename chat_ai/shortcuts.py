@@ -4,7 +4,7 @@ import re
 from chat_ai_assistant.routing import normalized
 from chat_ai_assistant.clarifications import message_language
 from chat_ai_assistant.contracts import ChatAIError
-from .security import is_manager
+from .security import capabilities, is_admin
 
 STARTERS = [
     (
@@ -49,47 +49,130 @@ ALIASES = {
     "/help": "/aide",
     "/summary": "/bilan",
 }
+MODULE_HELP = {
+    "project": (
+        "Recherchez un projet par son nom ou sa description.",
+        "Find a project by its name or description.",
+        "Atlas",
+        "Atlas",
+    ),
+    "task": (
+        "Recherchez une carte par son titre ou sa description.",
+        "Find a card by its title or description.",
+        "Moodboard",
+        "Moodboard",
+    ),
+    "message": (
+        "Retrouvez un texte dans les conversations auxquelles vous avez accès.",
+        "Find text in conversations you have access to.",
+        "maquette",
+        "mockup",
+    ),
+}
+
+
+def social_action(text, interface_language="fr"):
+    """Answer standalone pleasantries; never swallow an accompanying work request."""
+    value = re.sub(r"[^a-z0-9]+", " ", normalized(text)).strip()
+    phrases = {
+        "fr": {
+            "greeting": {"bonjour", "salut", "bonsoir", "coucou", "bonjour assistant"},
+            "wellbeing": {
+                "ca va",
+                "comment ca va",
+                "comment vas tu",
+                "bonjour ca va",
+                "salut ca va",
+            },
+            "thanks": {"merci", "merci beaucoup", "super merci"},
+            "goodbye": {"au revoir", "a bientot", "bonne journee", "bonne soiree"},
+        },
+        "en": {
+            "greeting": {
+                "hello",
+                "hi",
+                "hey",
+                "hello there",
+                "good morning",
+                "good afternoon",
+                "good evening",
+                "hello assistant",
+            },
+            "wellbeing": {"how are you", "hello how are you", "hi how are you"},
+            "thanks": {"thanks", "thank you", "thanks a lot", "thank you very much"},
+            "goodbye": {"bye", "goodbye", "see you", "have a nice day"},
+        },
+    }
+    replies = {
+        "fr": {
+            "greeting": "Bonjour ! Comment puis-je vous aider avec vos projets et vos tâches ?",
+            "wellbeing": "Bonjour ! Je suis prêt à vous aider. Que souhaitez-vous faire dans Design Workflow ?",
+            "thanks": "Avec plaisir ! N’hésitez pas si vous avez une autre question.",
+            "goodbye": "À bientôt et bonne continuation sur vos projets !",
+        },
+        "en": {
+            "greeting": "Hello! How can I help you with your projects and tasks?",
+            "wellbeing": "Hello! I’m ready to help. What would you like to do in Design Workflow?",
+            "thanks": "You’re welcome! Let me know if you have another question.",
+            "goodbye": "See you soon, and good luck with your projects!",
+        },
+    }
+    for language, intents in phrases.items():
+        for intent, variants in intents.items():
+            if value in variants:
+                return {"tool": "clarify", "message": replies[language][intent]}
+    if text.strip() in {"👋", "👋🏻", "👋🏼", "👋🏽", "👋🏾", "👋🏿"}:
+        language = "en" if interface_language == "en" else "fr"
+        return {"tool": "clarify", "message": replies[language]["greeting"]}
+    return None
 
 
 def suggestions(user, language="fr"):
-    entries = STARTERS + ([REPORT_STARTER] if is_manager(user) else [])
+    caps = capabilities(user)
+    entries = [
+        entry for entry in STARTERS if entry[2] != "knowledge" or "create" in caps
+    ]
+    entries += [REPORT_STARTER] if is_admin(user) else []
     return [entry[1 if language == "en" else 0] for entry in entries]
 
 
 def shortcut_catalog(user, language="fr"):
     en = language == "en"
+    names = {target: source for source, target in ALIASES.items()} if en else {}
     items = [
         {
-            "command": command,
+            "command": names.get(command, command),
             "title": english if en else french,
-            "help": (
-                "Type a name or a few words to search."
-                if en
-                else "Ajoutez un nom ou quelques mots pour rechercher."
-            ),
-            "example": command + " Atlas",
+            "help": MODULE_HELP[resource][int(en)],
+            "example": names.get(command, command)
+            + " "
+            + MODULE_HELP[resource][2 + int(en)],
         }
-        for command, _, french, english in MODULES
+        for command, resource, french, english in MODULES
     ]
     items.append(
         {
-            "command": "/aide",
+            "command": names.get("/aide", "/aide"),
             "title": "Help" if en else "Aide",
-            "help": "",
-            "example": "/aide",
+            "help": (
+                "Show the available shortcuts and how to use them."
+                if en
+                else "Affichez les raccourcis disponibles et leur utilisation."
+            ),
+            "example": names.get("/aide", "/aide"),
         }
     )
-    if is_manager(user):
+    if is_admin(user):
         items.append(
             {
-                "command": "/bilan",
+                "command": names.get("/bilan", "/bilan"),
                 "title": "Working time" if en else "Temps de travail",
                 "help": (
-                    "Native person-time report."
+                    "View recorded working time. Add an exact project name to filter it."
                     if en
-                    else "Temps de travail enregistré dans l’application."
+                    else "Consultez le temps de travail enregistré. Ajoutez le nom exact d’un projet pour le filtrer."
                 ),
-                "example": "/bilan",
+                "example": names.get("/bilan", "/bilan") + " Atlas",
             }
         )
     return items
@@ -97,13 +180,13 @@ def shortcut_catalog(user, language="fr"):
 
 def shortcut_action(text, executor, interface_language="fr"):
     user = executor.authorize()
-    for french, english, tool, args in STARTERS + (
-        [REPORT_STARTER] if is_manager(user) else []
-    ):
+    for french, english, tool, args in STARTERS + [REPORT_STARTER]:
         if normalized(text).rstrip(".?! ") in (
             normalized(french).rstrip(".?! "),
             normalized(english).rstrip(".?! "),
         ):
+            if tool == "time_report" and not is_admin(user):
+                raise ChatAIError("PERMISSION_DENIED")
             return {"tool": tool, "arguments": args}
     if not text.startswith("/"):
         return None
@@ -127,14 +210,21 @@ def shortcut_action(text, executor, interface_language="fr"):
                 "arguments": {"resource": resource, "query": arg},
             }
     if command == "/bilan":
-        if not is_manager(user):
+        if not is_admin(user):
             raise ChatAIError("PERMISSION_DENIED")
         return {"tool": "time_report", "arguments": {"project_name": arg}}
     if command == "/aide":
         return {
             "tool": "clarify",
-            "message": "\n".join(
-                x["command"] + " : " + x["title"]
+            "message": "\n\n".join(
+                x["command"]
+                + " — "
+                + x["title"]
+                + "\n"
+                + x["help"]
+                + "\n"
+                + ("Example: " if language == "en" else "Exemple : ")
+                + x["example"]
                 for x in shortcut_catalog(user, language)
             ),
         }

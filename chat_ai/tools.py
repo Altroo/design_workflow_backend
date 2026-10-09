@@ -19,7 +19,7 @@ from chat_ai_assistant.contracts import (
 from design_workflow.models import Project, Task, TaskStatus, ProjectStatus, ChatMessage
 from design_workflow.permissions import can_manage_project, can_mutate_task
 from design_workflow.views import get_chat_thread_queryset_for_user, TimeReportView
-from .security import authorize, capabilities, is_manager
+from .security import authorize, capabilities, is_admin, is_manager
 from .models import AuditEvent
 from .navigation import ChatAINavigationResolver, ROUTES, DETAILS
 from .resources import RESOURCES
@@ -107,13 +107,13 @@ def registry():
         ),
         (
             "time_report",
-            "Manager-only native recorded and live person-time. Includes every collaborator; one workday = 480 minutes.",
+            "Admin-only native recorded and live person-time. Includes every collaborator; one workday = 480 minutes.",
             object_schema({"project_name": STRING, "date_from": DATE, "date_to": DATE}),
             ("read", "report"),
         ),
         (
             "prepare_change",
-            "PROPOSE a known project/task edit or archive; requires separate human confirmation. Never deletes.",
+            "PROPOSE a permitted project/task edit or archive; requires separate human confirmation and edit/delete permission. Never deletes.",
             object_schema(
                 {
                     "resource": {"enum": ["project", "task"]},
@@ -135,7 +135,7 @@ def registry():
                 },
                 ["resource", "identifier", "operation"],
             ),
-            ("read",),
+            ("read", "mutate"),
         ),
     ]
     return ChatAIToolRegistry(
@@ -264,7 +264,12 @@ class ChatAIToolExecutor:
             "status": obj.status,
             "priority": obj.priority,
             "archived": obj.archived,
-            "can_edit": bool(writable and not archived),
+            "can_edit": bool(
+                writable and not archived and "update" in capabilities(user)
+            ),
+            "can_archive": bool(
+                writable and not archived and "archive" in capabilities(user)
+            ),
             "navigation": ChatAINavigationResolver.resolve(resource, 1, obj.pk),
         }
         if resource == "task":
@@ -439,7 +444,7 @@ class ChatAIToolExecutor:
 
     def time_report(self, project_name="", date_from=None, date_to=None):
         user = self.authorize()
-        if not is_manager(user):
+        if not is_admin(user):
             raise ChatAIError("PERMISSION_DENIED")
         params = {}
         if bool(date_from) != bool(date_to):

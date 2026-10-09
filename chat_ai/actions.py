@@ -79,7 +79,7 @@ def prepare(executor, resource, identifier, operation, changes):
         raise ChatAIError("CONTEXT_EXPIRED")
     obj = executor.record(resource, identifier)
     user = executor.authorize()
-    authorize_change(user, resource, obj)
+    authorize_change(user, resource, obj, operation)
     if operation == "update":
         validated_update(resource, obj, changes, user)
     elif changes:
@@ -132,7 +132,7 @@ def replay_confirmation(executor, descriptor):
             "status": "completed" if pending and pending.consumed_at else "expired",
         }
     obj = executor.record(pending.resource, pending.record_id)
-    authorize_change(executor.authorize(), pending.resource, obj)
+    authorize_change(executor.authorize(), pending.resource, obj, pending.operation)
     if fingerprint(pending.resource, obj) != pending.fingerprint:
         raise ChatAIError("CONTEXT_EXPIRED")
     return confirmation_card(pending, obj)
@@ -193,7 +193,7 @@ def confirm(request, id):
     if not CustomUser.objects.select_for_update().filter(pk=request.user.pk).exists():
         raise ChatAIError("NOT_AUTHENTICATED")
     user = authorize(request.user.pk)
-    authorize_change(user, action.resource, obj)
+    authorize_change(user, action.resource, obj, action.operation)
     if action.expires_at <= timezone.now():
         raise ChatAIError("CONTEXT_EXPIRED")
     factory = APIRequestFactory()

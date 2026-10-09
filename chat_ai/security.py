@@ -32,6 +32,10 @@ def is_manager(user):
     return user.is_staff or user.is_superuser or user.role == "manager"
 
 
+def is_admin(user):
+    return user.is_staff or user.is_superuser
+
+
 def authorize(user_id, company_id=1):
     if not settings.CHAT_AI_ASSISTANT_ENABLED:
         raise ChatAIError("APPLICATION_UNAVAILABLE")
@@ -40,15 +44,28 @@ def authorize(user_id, company_id=1):
     user = CustomUser.objects.filter(pk=user_id, is_active=True).first()
     if user is None:
         raise ChatAIError("NOT_AUTHENTICATED")
+    if not is_admin(user) and not user.can_view:
+        raise ChatAIError("PERMISSION_DENIED")
     return user
 
 
 def capabilities(user):
-    # Native workflow endpoints allow every active member to create projects.
-    # Editing/archiving still requires an independent record-level check.
-    return {"read", "create", "update", "archive"} | (
-        {"report"} if is_manager(user) else set()
-    )
+    admin = is_admin(user)
+    if not admin and not user.can_view:
+        return set()
+    caps = {"read"}
+    for capability, flag in (
+        ("create", "can_create"),
+        ("update", "can_edit"),
+        ("archive", "can_delete"),
+    ):
+        if admin or getattr(user, flag):
+            caps.add(capability)
+    if caps & {"update", "archive"}:
+        caps.add("mutate")
+    if admin:
+        caps.add("report")
+    return caps
 
 
 def authorization_stamp(user_id, company_id=1):
@@ -67,7 +84,9 @@ def authorization_stamp(user_id, company_id=1):
     ).hexdigest()
 
 
-def authorize_change(user, resource, obj):
+def authorize_change(user, resource, obj, operation):
+    if operation not in ("update", "archive") or operation not in capabilities(user):
+        raise ChatAIError("PERMISSION_DENIED")
     allowed = (
         can_manage_project(user, obj)
         if resource == "project"

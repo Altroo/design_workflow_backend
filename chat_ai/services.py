@@ -15,7 +15,12 @@ from .security import authorization_stamp, validate_text
 from .tools import ChatAIToolExecutor, registry
 from .labels import FIELD_LABELS, selected_action_text
 from chat_ai_assistant.presentation import labelled_text
-from .shortcuts import shortcut_action, reference_action, knowledge_action
+from .shortcuts import (
+    shortcut_action,
+    reference_action,
+    knowledge_action,
+    social_action,
+)
 
 
 def get_conversation(user_id, id):
@@ -290,7 +295,8 @@ class ChatAIConversationService:
             if context.get("resource") or context.get("identifier"):
                 executor.record(context.get("resource"), context.get("identifier"))
             forced = (
-                shortcut_action(text, executor, trusted["interface_language"])
+                social_action(text, trusted["interface_language"])
+                or shortcut_action(text, executor, trusted["interface_language"])
                 or reference_action(text, references)
                 or knowledge_action(text)
             )

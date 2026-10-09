@@ -7,12 +7,12 @@ COPY = {
     "fr": {
         "missing_details": "Précisez le projet, la tâche ou la période recherchée (avec l’année).",
         "ambiguous_metric": "Souhaitez-vous connaître le nombre de tâches ou le temps de travail ? Pour quelle période ?",
-        "unsupported": "Cette demande n’est pas disponible avec vos accès actuels. Je peux rechercher des projets et des tâches, ou expliquer les fonctionnalités de Design Workflow.",
+        "unsupported": "Je peux vous aider à retrouver des projets, des tâches et des messages, ou à utiliser Design Workflow. Pouvez-vous préciser ce que vous souhaitez faire dans l’application ?",
     },
     "en": {
         "missing_details": "Please specify the project, task or reporting period (including the year).",
         "ambiguous_metric": "Do you mean the number of tasks or working time? For which period?",
-        "unsupported": "This request is not available with your current access. I can find projects and tasks or explain Design Workflow features.",
+        "unsupported": "I can help you find projects, tasks and messages, or use Design Workflow. Could you tell me what you would like to do in the app?",
     },
 }
 

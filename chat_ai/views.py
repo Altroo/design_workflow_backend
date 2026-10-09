@@ -124,14 +124,15 @@ class ChatView(APIView):
 class CapabilitiesView(ChatView):
     def get(self, request):
         from .shortcuts import shortcut_catalog, suggestions
-        from .security import is_manager
+        from .security import is_admin, is_manager
 
         user = authorize(request.user.pk, 1)
         language = request.query_params.get("language", "fr")
         return Response(
             {
                 "application": "design_workflow",
-                "can_report": is_manager(user),
+                "can_report": is_admin(user),
+                "can_view_management_pages": is_manager(user),
                 "shortcuts": shortcut_catalog(user, language),
                 "suggestions": suggestions(user, language),
                 "languages": ["fr", "en"],
