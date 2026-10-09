@@ -62,6 +62,26 @@ def test_history_requires_authentication():
     assert APIClient().get("/api/ws/changelog/").status_code in (401, 403)
 
 
+def test_writing_assistant_release_is_complete_but_unpublished_and_idempotent():
+    migration = import_module("ws.migrations.0011_writing_assistant_release")
+    editor = connection.schema_editor()
+    migration.prepare_writing_assistant_release(apps, editor)
+    migration.prepare_writing_assistant_release(apps, editor)
+    release = ChangelogEntry.objects.get(date="2026-10-09")
+    assert release.version == "1.4.0"
+    assert release.is_published is False
+    assert len(release.changes_fr.splitlines()) == 5
+    assert len(release.changes_en.splitlines()) == 5
+    release.is_published = True
+    release.full_clean()
+    release.title_fr = "Titre modifié par l’équipe"
+    release.save()
+    migration.prepare_writing_assistant_release(apps, editor)
+    release.refresh_from_db()
+    assert release.title_fr == "Titre modifié par l’équipe"
+    assert release.is_published is True
+
+
 @pytest.mark.parametrize("version", ["", "1.0.0", "1.12.3"])
 def test_changelog_accepts_release_versions_and_unversioned_history(version):
     entry(version=version).full_clean()

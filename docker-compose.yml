@@ -35,6 +35,7 @@ services:
         condition: service_healthy
     networks:
       - backend
+      - ai-gateway
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/api/health/ || exit 1"]
       interval: 30s
@@ -107,3 +108,6 @@ volumes:
 networks:
   backend:
     driver: bridge
+  ai-gateway:
+    external: true
+    name: ebh-ai-gateway
