@@ -1,0 +1,25 @@
+{
+  "document_id": "workflow-tasks",
+  "application_id": "design_workflow",
+  "approved": true,
+  "title": "Créer une tâche / Create a task",
+  "category": "tasks",
+  "keywords": [
+    "tâche",
+    "carte",
+    "créer",
+    "task",
+    "card",
+    "create",
+    "project",
+    "projet"
+  ],
+  "required_capabilities": [
+    "read"
+  ],
+  "content": "Dans Tableau de tâches, cliquez sur Ajouter une carte, recherchez et sélectionnez un projet où vous pouvez travailler, puis renseignez le titre et les autres informations utiles. Le propriétaire du projet et ses collaborateurs peuvent créer des cartes. Une tâche qui vous est assignée seule ne donne pas le droit de créer d’autres tâches dans le projet. Ouvrez une carte pour modifier sa description, ses membres, sa date cible et sa priorité. Double-cliquez sur le titre pour la renommer. Les projets et cartes des autres restent consultables en lecture seule.\nIn Task board, select Add a card, search for and select a project you can work on, then enter the title and useful details. Project owners and collaborators can create cards. Being assigned only one task does not grant permission to create other tasks in that project. Open a card to edit its description, members, target date and priority. Double-click its title to rename it. Other projects and cards remain available as read-only.",
+  "localized_content": {
+    "fr": "Dans Tableau de tâches, cliquez sur Ajouter une carte, recherchez et sélectionnez un projet où vous pouvez travailler, puis renseignez le titre et les autres informations utiles. Le propriétaire du projet et ses collaborateurs peuvent créer des cartes. Une tâche qui vous est assignée seule ne donne pas le droit de créer d’autres tâches dans le projet. Ouvrez une carte pour modifier sa description, ses membres, sa date cible et sa priorité. Double-cliquez sur le titre pour la renommer. Les projets et cartes des autres restent consultables en lecture seule.",
+    "en": "In Task board, select Add a card, search for and select a project you can work on, then enter the title and useful details. Project owners and collaborators can create cards. Being assigned only one task does not grant permission to create other tasks in that project. Open a card to edit its description, members, target date and priority. Double-click its title to rename it. Other projects and cards remain available as read-only."
+  }
+}

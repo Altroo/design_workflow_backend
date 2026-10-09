@@ -36,6 +36,7 @@ services:
     networks:
       - backend
       - ai-gateway
+      - chat-ai
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/api/health/ || exit 1"]
       interval: 30s
@@ -111,3 +112,6 @@ networks:
   ai-gateway:
     external: true
     name: ebh-ai-gateway
+  chat-ai:
+    external: true
+    name: chat-ai-facturation-internal

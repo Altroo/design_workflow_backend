@@ -1,0 +1,28 @@
+{
+  "document_id": "workflow-files_chat",
+  "application_id": "design_workflow",
+  "approved": true,
+  "title": "Fichiers, messages et aide à la rédaction / Files, messages and writing help",
+  "category": "files_chat",
+  "keywords": [
+    "pièce",
+    "jointe",
+    "fichier",
+    "image",
+    "chat",
+    "message",
+    "attachment",
+    "file",
+    "writing",
+    "grammar",
+    "traduire"
+  ],
+  "required_capabilities": [
+    "read"
+  ],
+  "content": "Dans une carte, ajoutez plusieurs pièces jointes à la fois. Leur nom est proposé à partir du fichier et reste modifiable. Les fichiers originaux restent disponibles au téléchargement ; les images affichées utilisent des aperçus légers. Les images de couverture sont réduites pour charger plus vite. Dans Chat, choisissez la conversation, écrivez votre message et envoyez-le. Les mentions @ et les références # permettent de désigner des personnes ou des éléments de travail. Les boutons d’aide à la rédaction proposent une traduction, une correction ou une reformulation : vous relisez l’aperçu avant de l’appliquer, rien n’est envoyé automatiquement.\nOn a card, add multiple attachments at once. Each label starts with the filename and can be changed. Original files remain downloadable; displayed images use lightweight previews. Cover images are reduced for faster loading. In Chat, select a conversation, write your message and send it. Use @ mentions and # references for people or work items. Writing-help buttons offer translation, grammar correction or rewriting: review the preview before applying it; nothing is sent automatically.",
+  "localized_content": {
+    "fr": "Dans une carte, ajoutez plusieurs pièces jointes à la fois. Leur nom est proposé à partir du fichier et reste modifiable. Les fichiers originaux restent disponibles au téléchargement ; les images affichées utilisent des aperçus légers. Les images de couverture sont réduites pour charger plus vite. Dans Chat, choisissez la conversation, écrivez votre message et envoyez-le. Les mentions @ et les références # permettent de désigner des personnes ou des éléments de travail. Les boutons d’aide à la rédaction proposent une traduction, une correction ou une reformulation : vous relisez l’aperçu avant de l’appliquer, rien n’est envoyé automatiquement.",
+    "en": "On a card, add multiple attachments at once. Each label starts with the filename and can be changed. Original files remain downloadable; displayed images use lightweight previews. Cover images are reduced for faster loading. In Chat, select a conversation, write your message and send it. Use @ mentions and # references for people or work items. Writing-help buttons offer translation, grammar correction or rewriting: review the preview before applying it; nothing is sent automatically."
+  }
+}

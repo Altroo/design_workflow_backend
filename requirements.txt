@@ -30,3 +30,4 @@ django-simple-history==3.13.0
 numpy==2.5.3
 django-axes==8.3.1
 chardet==7.6.0
+./vendor/chat_ai_assistant-0.2.0-py3-none-any.whl

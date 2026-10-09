@@ -1,0 +1,24 @@
+{
+  "document_id": "workflow-projects",
+  "application_id": "design_workflow",
+  "approved": true,
+  "title": "Projets et collaboration / Projects and collaboration",
+  "category": "projects",
+  "keywords": [
+    "projet",
+    "collaborateur",
+    "partager",
+    "project",
+    "collaboration",
+    "collaborator",
+    "create"
+  ],
+  "required_capabilities": [
+    "read"
+  ],
+  "content": "Dans Projets, utilisez Nouveau projet et renseignez son nom, son responsable et les informations utiles. Ajoutez les collaborateurs qui travaillent sur ce projet. Le propriétaire et les collaborateurs peuvent créer, modifier et déplacer les tâches du projet. Tous les membres peuvent consulter les autres projets et leurs cartes, sans les modifier. Archiver un projet archive aussi ses tâches et arrête leur comptage de temps. Il faut restaurer le projet avant de pouvoir restaurer ses tâches.\nIn Projects, use New project and enter its name, owner and useful details. Add the collaborators working on it. The owner and collaborators can create, edit and move its tasks. All members can view other projects and cards without modifying them. Archiving a project also archives its tasks and stops their time tracking. Restore the project before restoring its tasks.",
+  "localized_content": {
+    "fr": "Dans Projets, utilisez Nouveau projet et renseignez son nom, son responsable et les informations utiles. Ajoutez les collaborateurs qui travaillent sur ce projet. Le propriétaire et les collaborateurs peuvent créer, modifier et déplacer les tâches du projet. Tous les membres peuvent consulter les autres projets et leurs cartes, sans les modifier. Archiver un projet archive aussi ses tâches et arrête leur comptage de temps. Il faut restaurer le projet avant de pouvoir restaurer ses tâches.",
+    "en": "In Projects, use New project and enter its name, owner and useful details. Add the collaborators working on it. The owner and collaborators can create, edit and move its tasks. All members can view other projects and cards without modifying them. Archiving a project also archives its tasks and stops their time tracking. Restore the project before restoring its tasks."
+  }
+}

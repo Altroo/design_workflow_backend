@@ -22,6 +22,7 @@ CSRF_TRUSTED_ORIGINS = config(
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 INSTALLED_APPS = [
+    "chat_ai",
     "ai_assistant.apps.AiAssistantConfig",
     "django.contrib.admin",
     "django.contrib.auth",
@@ -234,6 +235,10 @@ CHANNEL_LAYERS = {
 CELERY_BROKER_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}/1"
 CELERY_RESULT_BACKEND = f"redis://{REDIS_HOST}:{REDIS_PORT}/1"
 CELERY_BEAT_SCHEDULE = {
+    "purge-assistant-history": {
+        "task": "chat_ai.purge_history",
+        "schedule": crontab(hour=3, minute=25),
+    },
     "design-workflow-due-task-notifications": {
         "task": "design_workflow.tasks.generate_due_task_notifications",
         "schedule": crontab(minute="*/5"),
@@ -326,6 +331,17 @@ AXES_IPWARE_PROXY_ORDER = "left-most"
 
 # Shared private AI gateway. This application has its own identity and secret.
 AI_ASSISTANT_ENABLED = config("AI_ASSISTANT_ENABLED", default=False, cast=bool)
+
+# Conversational assistant. Reuses the private shared inference service, not
+# the writing/translation gateway. No public model or hosted fallback.
+CHAT_AI_ASSISTANT_ENABLED = config("CHAT_AI_ASSISTANT_ENABLED", default=False, cast=bool)
+CHAT_AI_MODEL_URL = config("CHAT_AI_MODEL_URL", default="http://127.0.0.1:18090/v1")
+CHAT_AI_MODEL_ID = config("CHAT_AI_MODEL_ID", default="chat-ai-design-workflow")
+CHAT_AI_MODEL_KEY = config("CHAT_AI_MODEL_KEY", default="")
+CHAT_AI_MODEL_TIMEOUT = config("CHAT_AI_MODEL_TIMEOUT", default=90, cast=int)
+CHAT_AI_MODEL_MAX_TOKENS = 512
+CHAT_AI_RETENTION_DAYS = 30
+CHAT_AI_KNOWLEDGE_PATH = BASE_DIR / "chat_ai" / "knowledge"
 AI_ASSISTANT_SERVICE_NAME = config(
     "AI_ASSISTANT_SERVICE_NAME", default="design_workflow"
 )

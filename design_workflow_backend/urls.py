@@ -53,6 +53,7 @@ handler404 = custom_404
 handler500 = custom_500
 
 urlpatterns = [
+    path("api/chat-ai/", include("chat_ai.urls")),
     path("api/ai/", include("ai_assistant.urls")),
     # Health check endpoint (unauthenticated)
     path("api/health/", health_check, name="health-check"),

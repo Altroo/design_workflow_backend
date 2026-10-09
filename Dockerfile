@@ -6,6 +6,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y build-essential libpq-dev gettext ffmpeg libsm6 libxext6 curl gosu && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
+COPY vendor/ ./vendor/
 
 RUN pip install --no-cache-dir -r requirements.txt
 

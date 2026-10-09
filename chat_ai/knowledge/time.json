@@ -1,0 +1,28 @@
+{
+  "document_id": "workflow-time",
+  "application_id": "design_workflow",
+  "approved": true,
+  "title": "Rapports et temps de travail / Reports and working time",
+  "category": "time",
+  "keywords": [
+    "rapport",
+    "temps",
+    "heure",
+    "jour",
+    "report",
+    "time",
+    "hour",
+    "day",
+    "samedi",
+    "saturday"
+  ],
+  "required_capabilities": [
+    "read",
+    "report"
+  ],
+  "content": "Les rapports sont réservés aux responsables et administrateurs. Filtrez par projet, par personne et par période pour comprendre la charge et l’avancement. Une journée de travail représente 8 heures : de 9 h à 13 h puis de 14 h à 18 h du lundi au vendredi. Le samedi compte de 9 h à 13 h ; le dimanche et la pause déjeuner ne sont pas comptés. Le temps suit les cartes En cours. Pour un projet partagé, une heure travaillée compte pour chaque collaborateur concerné : deux personnes représentent deux heures-personnes. Les jours affichés sont des équivalents de 8 heures, pas des jours calendaires. Le rapport PDF s’ouvre pour être consulté ou enregistré.\nReports are restricted to managers and administrators. Filter by project, person and period to understand workload and progress. One working day equals 8 hours: 09:00–13:00 and 14:00–18:00 Monday to Friday. Saturday counts 09:00–13:00; Sundays and lunch breaks do not count. Time follows In progress cards. On a shared project, one working hour counts for each relevant collaborator: two people represent two person-hours. Displayed days are 8-hour equivalents, not calendar days. The PDF report opens for viewing or saving.",
+  "localized_content": {
+    "fr": "Les rapports sont réservés aux responsables et administrateurs. Filtrez par projet, par personne et par période pour comprendre la charge et l’avancement. Une journée de travail représente 8 heures : de 9 h à 13 h puis de 14 h à 18 h du lundi au vendredi. Le samedi compte de 9 h à 13 h ; le dimanche et la pause déjeuner ne sont pas comptés. Le temps suit les cartes En cours. Pour un projet partagé, une heure travaillée compte pour chaque collaborateur concerné : deux personnes représentent deux heures-personnes. Les jours affichés sont des équivalents de 8 heures, pas des jours calendaires. Le rapport PDF s’ouvre pour être consulté ou enregistré.",
+    "en": "Reports are restricted to managers and administrators. Filter by project, person and period to understand workload and progress. One working day equals 8 hours: 09:00–13:00 and 14:00–18:00 Monday to Friday. Saturday counts 09:00–13:00; Sundays and lunch breaks do not count. Time follows In progress cards. On a shared project, one working hour counts for each relevant collaborator: two people represent two person-hours. Displayed days are 8-hour equivalents, not calendar days. The PDF report opens for viewing or saving."
+  }
+}

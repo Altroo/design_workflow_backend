@@ -1,0 +1,22 @@
+{
+  "title_fr": "Un assistant pour vos projets et vos tâches",
+  "title_en": "An assistant for your projects and tasks",
+  "changes_fr": [
+    "Posez vos questions à l’assistant en français ou en anglais pour retrouver des projets, des tâches et des messages auxquels vous avez accès.",
+    "Obtenez de l’aide pour utiliser l’application et ouvrez directement les éléments retrouvés.",
+    "Demandez une modification ou un archivage, vérifiez la proposition, puis confirmez avant tout enregistrement. Vos droits d’accès restent inchangés.",
+    "Les responsables peuvent consulter la répartition des tâches et le temps de travail enregistré, en heures et en journées de 8 heures.",
+    "Retrouvez vos conversations avec l’assistant sur ordinateur et sur mobile, en mode clair ou sombre.",
+    "Lors de la création d’une carte, dans le tableau ou depuis le chat, recherchez le projet en tapant son nom.",
+    "La page des mises à jour s’appelle désormais Nouveautés en français."
+  ],
+  "changes_en": [
+    "Ask the assistant in French or English to find projects, tasks and messages you have access to.",
+    "Get help using the application and open matching items directly.",
+    "Request a change or archiving, review the proposal, then confirm before anything is saved. Your access permissions stay the same.",
+    "Managers can view task distribution and recorded working time, in hours and eight-hour working days.",
+    "Revisit assistant conversations on desktop and mobile, in light or dark mode.",
+    "When creating a card on the board or from chat, search for its project by typing its name.",
+    "The updates page is now called Nouveautés in French."
+  ]
+}

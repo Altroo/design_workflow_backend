@@ -1,0 +1,24 @@
+{
+  "document_id": "workflow-review",
+  "application_id": "design_workflow",
+  "approved": true,
+  "title": "Demander une revue et approuver / Review and approval",
+  "category": "review",
+  "keywords": [
+    "revue",
+    "approbation",
+    "approuver",
+    "review",
+    "approval",
+    "approve",
+    "statut"
+  ],
+  "required_capabilities": [
+    "read"
+  ],
+  "content": "Lorsque votre travail est prêt, ouvrez la carte et utilisez Soumettre pour revue. Confirmez la demande : la carte passe en En revue. Le responsable de la revue peut demander des modifications ou approuver le travail. Après confirmation de l’approbation, la carte passe en Terminé. Utilisez ces boutons dans la carte pour conserver les étapes de validation ; l’assistant n’approuve pas un travail à votre place.\nWhen work is ready, open the card and choose Submit for review. Confirm the request: the card moves to In review. The reviewer can request changes or approve the work. After approval is confirmed, the card moves to Done. Use the card’s review controls to preserve the approval steps; the assistant does not approve work on your behalf.",
+  "localized_content": {
+    "fr": "Lorsque votre travail est prêt, ouvrez la carte et utilisez Soumettre pour revue. Confirmez la demande : la carte passe en En revue. Le responsable de la revue peut demander des modifications ou approuver le travail. Après confirmation de l’approbation, la carte passe en Terminé. Utilisez ces boutons dans la carte pour conserver les étapes de validation ; l’assistant n’approuve pas un travail à votre place.",
+    "en": "When work is ready, open the card and choose Submit for review. Confirm the request: the card moves to In review. The reviewer can request changes or approve the work. After approval is confirmed, the card moves to Done. Use the card’s review controls to preserve the approval steps; the assistant does not approve work on your behalf."
+  }
+}
