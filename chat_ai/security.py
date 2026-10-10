@@ -14,20 +14,6 @@ SECRET = re.compile(
     re.I,
 )
 
-IDLE_MEME_ACCOUNTS = frozenset(
-    {
-        "mahmoud@casadilusso.ma",
-        "khaoula@casadilusso.ma",
-        "med.amine@casadilusso.ma",
-        "maissam@casadilusso.ma",
-        "maryam@casadilusso.ma",
-    }
-)
-
-
-def idle_meme_enabled(user):
-    return user.email.strip().casefold() in IDLE_MEME_ACCOUNTS
-
 
 def validate_text(text):
     if (
