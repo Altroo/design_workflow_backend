@@ -34,13 +34,30 @@ def user_name(user):
 
 
 DATE = {"type": "string", "pattern": r"^\d{4}-\d{2}-\d{2}$"}
+# French labels mirror the existing board/project controls, not database records.
+STATUS_LABELS_FR = {
+    "backlog": "À planifier", "todo": "À faire", "in_progress": "En cours",
+    "in_review": "En revue", "blocked": "Bloqué", "done": "Terminé",
+    "planned": "Planifié", "active": "Actif", "on_hold": "En pause",
+    "completed": "Terminé", "archived": "Archivé",
+}
+
+
+def status_description():
+    return "; ".join(
+        resource + ": " + ", ".join(
+            f"{value} = {label} / {STATUS_LABELS_FR[value]}" for value, label in choices
+        ) for resource, choices in (("task", TaskStatus.choices), ("project", ProjectStatus.choices))
+    ) + ". Board status only; in_review does not prove a pending formal review request."
+
+
 FILTERS = {
-    "project_name": STRING,
-    "assignee_name": STRING,
-    "mine": {"type": "boolean"},
-    "status": STRING,
-    "overdue": {"type": "boolean"},
-    "archived": {"type": "boolean"},
+    "project_name": {**STRING, "description": "Project name, also for tasks belonging to that project."},
+    "assignee_name": {**STRING, "description": "Person's first/last name or email: current task assignee, or project manager. Not record title text."},
+    "mine": {"type": "boolean", "description": "Projects/tasks involving the authenticated user as project manager or collaborator, or task assignee; broader than strictly assigned-to-me."},
+    "status": {**STRING, "description": status_description()},
+    "overdue": {"type": "boolean", "description": "Tasks only: due date before today and status other than done."},
+    "archived": {"type": "boolean", "description": "Projects/tasks: false by default. True selects archived records."},
 }
 
 
@@ -48,11 +65,11 @@ def registry():
     specs = [
         (
             "search_records",
-            "Search projects/tasks or permitted chat messages; all filters combine with AND.",
+            "Search projects/tasks; all filters combine with AND. Messages support query only. Formal review state is not a supported filter.",
             object_schema(
                 {
                     "resource": RESOURCE,
-                    "query": STRING,
+                    "query": {**STRING, "description": "Text in project name/task title or description, or chat message text. Use assignee_name for a person and project_name for project membership."},
                     **FILTERS,
                     "limit": {"type": "integer", "minimum": 1, "maximum": 10},
                 },
@@ -101,7 +118,7 @@ def registry():
         ),
         (
             "workload_summary",
-            "Count non-archived tasks by their actual board status; supports project or my tasks.",
+            "Count non-archived tasks by their actual board status. mine includes projects I manage/collaborate on and tasks assigned to me.",
             object_schema({"project_name": STRING, "mine": {"type": "boolean"}}),
             ("read",),
         ),
