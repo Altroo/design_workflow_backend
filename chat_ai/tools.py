@@ -175,10 +175,11 @@ def registry():
 
 class ChatAIToolExecutor:
     def __init__(
-        self, user_id, company_id, request_id, state=None, context=None, audit=True
+        self, user_id, company_id, request_id, state=None, context=None, audit=True, instruction=None
     ):
         self.user_id, self.company_id, self.request_id = user_id, company_id, request_id
         self.state, self.context, self.audit = state or {}, context or {}, audit
+        self.instruction = instruction or ""
 
     def authorize(self):
         return authorize(self.user_id, self.company_id)

@@ -262,7 +262,7 @@ class ChatAIConversationService:
             if not created and user_message.text != text:
                 raise ChatAIError("INVALID_ARGUMENTS")
             executor = ChatAIToolExecutor(
-                user_id, conv.company_id, request_id, conv.references, context
+                user_id, conv.company_id, request_id, conv.references, context, instruction=text
             )
             references = conv.references
             if references.get("ids"):

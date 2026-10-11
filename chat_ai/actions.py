@@ -11,6 +11,7 @@ from django.db import transaction, connection
 from django.utils import timezone
 from rest_framework.test import APIRequestFactory, force_authenticate
 from simple_history.models import HistoricalRecords
+from chat_ai_assistant.selection_context import ordinal_target_matches, explicit_target_matches
 from chat_ai_assistant.contracts import ChatAIError
 from account.models import CustomUser
 from design_workflow.models import Project
@@ -65,6 +66,12 @@ def validated_update(resource, obj, changes, user):
 def prepare(executor, resource, identifier, operation, changes):
     if resource not in ("project", "task") or operation not in ("update", "archive"):
         raise ChatAIError("INVALID_ARGUMENTS")
+    aliases = {'project': 'project|projet', 'task': 'task|tache'}
+    ordinal = ordinal_target_matches(executor.instruction, resource, identifier,
+                                     executor.state, timezone.now(), aliases)
+    explicit = explicit_target_matches(executor.instruction, resource, identifier, aliases)
+    if ordinal is False or explicit is False:
+        raise ChatAIError('CONTEXT_EXPIRED')
     # Only a record actually selected/read in this conversation/current page is a target.
     known = (
         executor.state.get("resource") == resource
