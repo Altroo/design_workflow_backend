@@ -66,7 +66,7 @@ def validated_update(resource, obj, changes, user):
 def prepare(executor, resource, identifier, operation, changes):
     if resource not in ("project", "task") or operation not in ("update", "archive"):
         raise ChatAIError("INVALID_ARGUMENTS")
-    aliases = {'project': 'project|projet', 'task': 'task|tache'}
+    aliases = {'project': 'project|projet', 'task': 'task|tache|card|carte'}
     ordinal = ordinal_target_matches(executor.instruction, resource, identifier,
                                      executor.state, timezone.now(), aliases)
     explicit = explicit_target_matches(executor.instruction, resource, identifier, aliases)

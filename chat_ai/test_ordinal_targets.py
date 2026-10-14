@@ -52,3 +52,42 @@ def test_explicit_other_target_rejects_before_native_record_read(env,instruction
         assert caught.value.code=="CONTEXT_EXPIRED"
         read_target.assert_not_called()
     assert not PendingAction.objects.exists()
+
+@pytest.mark.parametrize('instruction,index', [
+    ('Archive the second card.',1),
+    ('Archive la première carte.',0),
+])
+def test_card_ordinals_reject_wrong_saved_sibling_before_lookup(env,instruction,index):
+    from design_workflow.models import Task
+    second=Task.objects.create(project=env.project,title='Synthetic second',
+        created_by=env.owner,updated_by=env.owner,current_assignee=env.owner,status='in_progress')
+    choices=[env.task,second]
+    expected,wrong=choices[index],choices[1-index]
+    ex=executor(env.owner,state={'resource':'task','ids':[item.pk for item in choices],
+        'expires_at':(timezone.now()+timedelta(minutes=5)).isoformat()},
+        context={'resource':'task','identifier':wrong.pk})
+    ex.instruction=instruction
+    with patch.object(ex,'record') as native:
+        with pytest.raises(ChatAIError) as caught:
+            ex.execute('prepare_change',{'resource':'task','identifier':wrong.pk,'operation':'archive'})
+        assert caught.value.code=='CONTEXT_EXPIRED'
+        native.assert_not_called()
+    assert not PendingAction.objects.exists()
+    card=ex.execute('prepare_change',{'resource':'task','identifier':expected.pk,'operation':'archive'})
+    assert card['record_id']==expected.pk
+    expected.refresh_from_db()
+    assert not expected.archived
+
+
+@pytest.mark.parametrize('noun',['card','carte'])
+def test_card_explicit_id_rejects_another_known_task(env,noun):
+    ex=executor(env.owner,state={'resource':'task','ids':[env.task.pk,743],
+        'expires_at':(timezone.now()+timedelta(minutes=5)).isoformat()},
+        context={'resource':'task','identifier':env.task.pk})
+    ex.instruction=f'Archive {noun} ID 743.'
+    with patch.object(ex,'record') as native:
+        with pytest.raises(ChatAIError) as caught:
+            ex.execute('prepare_change',{'resource':'task','identifier':env.task.pk,'operation':'archive'})
+        assert caught.value.code=='CONTEXT_EXPIRED'
+        native.assert_not_called()
+    assert not PendingAction.objects.exists()
