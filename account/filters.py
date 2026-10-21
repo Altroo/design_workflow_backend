@@ -1,11 +1,32 @@
+from datetime import datetime, time, timedelta
+
 import django_filters
+from django.conf import settings
 from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
 from django.db import connection
 from django.db.models import Case, CharField, F, FloatField, Q, Value, When
 from django.db.utils import DatabaseError
+from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 from .models import CustomUser
+
+
+class CalendarDateFilter(django_filters.DateFilter):
+    """Compare a timestamp against complete local calendar days."""
+
+    def filter(self, qs, value):
+        if value is None:
+            return qs
+        # Use the next midnight exclusively for an upper bound. This includes
+        # the whole final day and keeps the timestamp column's index usable.
+        upper_bound = self.lookup_expr == "lte"
+        day = value + timedelta(days=1) if upper_bound else value
+        boundary = datetime.combine(day, time.min)
+        if settings.USE_TZ:
+            boundary = timezone.make_aware(boundary, timezone.get_current_timezone())
+        lookup = "lt" if upper_bound else self.lookup_expr
+        return qs.filter(**{f"{self.field_name}__{lookup}": boundary})
 
 
 class IsEmptyFilter(django_filters.BooleanFilter):
@@ -43,16 +64,16 @@ class IsEmptyAutoMixin:
 
 class UsersFilter(IsEmptyAutoMixin, django_filters.FilterSet):
     search = django_filters.CharFilter(method="global_search", label=_("Search"))
-    date_joined_after = django_filters.DateTimeFilter(
+    date_joined_after = CalendarDateFilter(
         field_name="date_joined", lookup_expr="gte", label=_("Date Joined After")
     )
-    date_joined_before = django_filters.DateTimeFilter(
+    date_joined_before = CalendarDateFilter(
         field_name="date_joined", lookup_expr="lte", label=_("Date Joined Before")
     )
-    last_login_after = django_filters.DateTimeFilter(
+    last_login_after = CalendarDateFilter(
         field_name="last_login", lookup_expr="gte", label=_("Last Login After")
     )
-    last_login_before = django_filters.DateTimeFilter(
+    last_login_before = CalendarDateFilter(
         field_name="last_login", lookup_expr="lte", label=_("Last Login Before")
     )
 
