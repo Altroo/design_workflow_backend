@@ -88,3 +88,10 @@ python -m pytest --cov
 ## Portfolio Note
 
 The repository is public for portfolio review. Screenshots are redacted, and sensitive production values are intentionally hidden.
+
+
+The writing assistant uses the signed shared Groq gateway when this application
+is selected there. Credentials stay on the gateway. Translation and editing
+preserve references, mentions, line structure and business values. Suggestions
+remain previews; user content is not changed or sent automatically. Provider
+quotas return a retry delay instead of blocking a request with a sleep.

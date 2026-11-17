@@ -63,7 +63,11 @@ class AiAssistantClient:
             raise ModelTimeout() from exc
         except error.HTTPError as exc:
             if exc.code == 429:
-                raise Throttled(wait=60) from exc
+                try:
+                    wait = max(1, float((exc.headers or {}).get("Retry-After", 60)))
+                except TypeError, ValueError:
+                    wait = 60
+                raise Throttled(wait=wait) from exc
             if exc.code in (408, 504):
                 raise ModelTimeout() from exc
             raise ModelUnavailable() from exc

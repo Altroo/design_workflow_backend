@@ -258,3 +258,10 @@ def test_default_service_identity_belongs_to_design_workflow():
     from design_workflow_backend import settings
 
     assert settings.AI_ASSISTANT_SERVICE_NAME == "design_workflow"
+
+
+def test_gateway_daily_quota_retry_is_preserved_without_sleeping():
+    with patch('ai_assistant.client.request.urlopen',side_effect=HTTPError('private',429,'limited',{'Retry-After':'86400'},None)):
+        with pytest.raises(Throttled) as caught:
+            AiAssistantClient().assist(action='fix_grammar',text='Les images sont pret')
+    assert caught.value.wait==86400

@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+trap 'printf "Design Workflow backend deployment failed at line %s.\n" "$LINENO" >&2' ERR
+target_path=/var/www/design_workflow_backend
+repo_path=/var/repo/design_workflow_backend.git
+exec 9>"$repo_path/deploy.lock"
+flock 9
+while read -r oldrev newrev ref; do
+  [[ "$ref" == refs/heads/main ]] || continue
+  [[ "$newrev" == "$(git --git-dir="$repo_path" rev-parse refs/heads/main)" ]] || continue
+  git --work-tree="$target_path" --git-dir="$repo_path" checkout -f main
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+  cd "$target_path"
+  compose=(docker compose --project-directory "$target_path" -f "$target_path/docker-compose.yml")
+  "${compose[@]}" config --quiet
+  backup_path=/home/deploy/.private-backups/design_workflow-backend
+  install -d -m 700 "$backup_path"
+  attempt_id="${newrev:0:12}-$(date -u +%Y%m%dT%H%M%S%N)"
+  for service in web celery beat; do
+    running="$("${compose[@]}" ps -q "$service")"
+    if [[ -n "$running" ]]; then
+      image="$(docker inspect --format '{{.Image}}' "$running")"
+      docker image tag "$image" "design_workflow-backend-rollback:$service-$attempt_id"
+    fi
+  done
+  "${compose[@]}" build web celery beat
+  backup_file="$backup_path/database-$attempt_id.dump"
+  (umask 077; "${compose[@]}" exec -T db sh -c 'exec pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$backup_file")
+  "${compose[@]}" exec -T db pg_restore --list < "$backup_file" >/dev/null
+  "${compose[@]}" run --rm --no-deps --interactive=false -T web python manage.py check
+  "${compose[@]}" run --rm --no-deps --interactive=false -T web python manage.py migrate --noinput
+  "${compose[@]}" run --rm --no-deps --interactive=false -T web python manage.py migrate --check
+  "${compose[@]}" up --no-deps --no-build --wait --wait-timeout 180 web celery beat
+  "${compose[@]}" exec -T web python manage.py migrate --check
+  docker exec nginx nginx -t
+  docker exec nginx nginx -s reload
+  curl --http1.1 -H 'Connection: close' --retry 6 --retry-delay 2 --retry-connrefused --fail --silent --show-error --output /dev/null https://design-workflow-api.elbouazzatiholding.ma/api/health/
+  printf 'Design Workflow backend deployment verified: %s\n' "$newrev"
+done
