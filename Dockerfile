@@ -11,6 +11,7 @@ COPY vendor/ ./vendor/
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+RUN msgfmt --check-format -o locale/en/LC_MESSAGES/django.mo locale/en/LC_MESSAGES/django.po
 
 # Collect static files for WhiteNoise
 RUN python manage.py collectstatic --noinput

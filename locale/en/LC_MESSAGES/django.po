@@ -236,6 +236,14 @@ msgid_plural "Requête ralentie. Réessayez dans %(wait)d secondes."
 msgstr[0] "Request throttled. Retry in %(wait)d second."
 msgstr[1] "Request throttled. Retry in %(wait)d seconds."
 
+#, python-format
+msgid "Requête ralentie. Réessayez dans %(duration)s."
+msgstr "Request throttled. Try again in %(duration)s."
+
+msgid "Requête ralentie. Réessayez plus tard."
+msgstr "Request throttled. Try again later."
+
+
 msgid "View site"
 msgstr "View site"
 
